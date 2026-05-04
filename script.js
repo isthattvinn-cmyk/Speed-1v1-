@@ -15,6 +15,7 @@ const refs = {
   message: document.getElementById("message"),
   accountUsername: document.getElementById("account-username"),
   accountPassword: document.getElementById("account-password"),
+  playerColor: document.getElementById("player-color"),
   accountMessage: document.getElementById("account-message"),
   loginBtn: document.getElementById("login-btn"),
   signupBtn: document.getElementById("signup-btn"),
@@ -32,6 +33,10 @@ const refs = {
   resultsList: document.getElementById("results-list"),
   rematchBtn: document.getElementById("rematch-btn"),
   closeResultsBtn: document.getElementById("close-results-btn"),
+  chatPanel: document.getElementById("chat-panel"),
+  chatLog: document.getElementById("chat-log"),
+  chatForm: document.getElementById("chat-form"),
+  chatInput: document.getElementById("chat-input"),
   transitionOverlay: document.getElementById("transition-overlay"),
   transitionText: document.getElementById("transition-text"),
   countdownText: document.getElementById("countdown-text")
@@ -60,7 +65,7 @@ const PHASE = {
   COUNTDOWN: "COUNTDOWN",
   RACING: "RACING"
 };
-const COUNTDOWN_MS = 6000;
+const COUNTDOWN_MS = 15000;
 const LOAD_FADE_MS = 900;
 
 let gridWidth = BASE_GRID_WIDTH;
@@ -83,6 +88,7 @@ let currentAccount = null;
 let spectating = false;
 let spectateIndex = 0;
 let resultsShownForWinner = null;
+let chatMessages = [];
 
 const player = {
   id: "",
@@ -126,12 +132,16 @@ function saveAccounts(accounts) {
 }
 
 function setCurrentAccount(username) {
+  const accounts = loadAccounts();
   currentAccount = username;
   localStorage.setItem(CURRENT_ACCOUNT_KEY, username);
   refs.hostName.value = username;
   refs.guestName.value = username;
   refs.accountUsername.value = username;
   refs.accountPassword.value = "";
+  if (accounts[username]?.color) {
+    refs.playerColor.value = accounts[username].color;
+  }
   refs.accountMessage.textContent = `Logged in as ${username}.`;
 }
 
@@ -150,7 +160,7 @@ function createAccount() {
     return;
   }
 
-  accounts[username] = { password };
+  accounts[username] = { password, color: refs.playerColor.value };
   saveAccounts(accounts);
   setCurrentAccount(username);
 }
@@ -166,6 +176,22 @@ function loginAccount() {
   }
 
   setCurrentAccount(username);
+}
+
+function updateAccountColor() {
+  player.color = refs.playerColor.value;
+
+  if (currentAccount) {
+    const accounts = loadAccounts();
+    if (accounts[currentAccount]) {
+      accounts[currentAccount].color = refs.playerColor.value;
+      saveAccounts(accounts);
+    }
+  }
+
+  saveLobby();
+  broadcast("player-update", { player: snapshotPlayer(player) });
+  renderLobbyList();
 }
 
 function restoreAccount() {
@@ -212,6 +238,7 @@ function saveLobby() {
     loadingStartedAt: lobby.loadingStartedAt,
     countdownStartedAt: lobby.countdownStartedAt,
     raceStartedAt: lobby.raceStartedAt,
+    chatMessages,
     winner: lobby.winner,
     hostId: lobby.hostId,
     players: [snapshotPlayer(player), ...remotePlayers.values()].map((item) => ({
@@ -279,6 +306,10 @@ function setupChannel(code) {
 
     if (data.type === "rematch") {
       beginRematch(data.rematch);
+    }
+
+    if (data.type === "chat-message") {
+      addChatMessage(data.message, false);
     }
   });
 }
@@ -413,8 +444,9 @@ function startRun(config, localName, colorIndex) {
 
   player.id = config.localPlayerId || createId();
   player.name = localName || (lobby.solo ? "Solo" : "Runner");
-  player.color = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
+  player.color = refs.playerColor.value || PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
   remotePlayers.clear();
+  chatMessages = Array.isArray(config.chatMessages) ? config.chatMessages.slice(-40) : [];
   (config.players || []).forEach((remote) => {
     if (remote.id !== player.id) remotePlayers.set(remote.id, remote);
   });
@@ -438,6 +470,7 @@ function startRun(config, localName, colorIndex) {
   saveLobby();
   broadcast("player-update", { player: snapshotPlayer(player) });
   renderLobbyList();
+  renderChat();
 }
 
 function createLobby(event) {
@@ -459,6 +492,7 @@ function createLobby(event) {
     winner: null,
     hostId,
     localPlayerId: hostId,
+    chatMessages: [],
     players: []
   };
 
@@ -479,6 +513,7 @@ function startSolo() {
     startTime: Date.now(),
     raceStartedAt: Date.now(),
     winner: null,
+    chatMessages: [],
     players: []
   }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
 }
@@ -572,6 +607,7 @@ function getAccountName(fallback) {
 function syncStartButton() {
   const canStart = isHost() && lobby?.phase === PHASE.LOBBY;
   refs.startRaceBtn.style.display = canStart ? "block" : "none";
+  refs.chatPanel.style.display = lobby && !lobby.solo ? "block" : "none";
 }
 
 function beginRematch(rematch) {
@@ -623,6 +659,8 @@ function leaveGame() {
   refs.message.textContent = "Left the run. Create or join another 5 digit party.";
   syncStartButton();
   renderLobbyList();
+  chatMessages = [];
+  renderChat();
   hideResults();
 }
 
@@ -710,7 +748,7 @@ function updatePhase() {
   if (lobby.phase === PHASE.COUNTDOWN) {
     const remaining = Math.max(0, lobby.raceStartedAt - Date.now());
     refs.countdownText.textContent = String(Math.ceil(remaining / 1000));
-    refs.transitionText.textContent = "Locked on";
+    refs.transitionText.textContent = "Map preview";
 
     if (remaining <= 0) {
       lobby.phase = PHASE.RACING;
@@ -861,6 +899,10 @@ function getSpectateTargets() {
 }
 
 function getCameraTarget() {
+  if (lobby?.phase === PHASE.COUNTDOWN) {
+    return getCountdownPreviewTarget();
+  }
+
   if (!spectating) return player;
   const targets = getSpectateTargets();
   if (!targets.length) {
@@ -872,6 +914,19 @@ function getCameraTarget() {
   const target = targets[spectateIndex];
   refs.spectateName.textContent = target.name || "Player";
   return target;
+}
+
+function getCountdownPreviewTarget() {
+  const startedAt = lobby.countdownStartedAt || Date.now();
+  const duration = Math.max(1, lobby.raceStartedAt - startedAt);
+  const elapsed = Math.max(0, Math.min(duration, Date.now() - startedAt));
+  const progress = elapsed / duration;
+  const index = Math.max(0, Math.min(cavePath.length - 1, Math.floor(progress * (cavePath.length - 1))));
+
+  return {
+    x: index * TILE_SIZE + TILE_SIZE / 2,
+    y: cavePath[index] * TILE_SIZE
+  };
 }
 
 function updateSpectatorControls() {
@@ -935,6 +990,54 @@ function renderLobbyList() {
     .join("");
 
   refs.playerList.innerHTML = rows || `<div class="player-row"><span></span><span>No players</span><small></small></div>`;
+}
+
+function addChatMessage(message, shouldBroadcast = true) {
+  if (!message || !lobby || lobby.solo) return;
+
+  const normalized = {
+    id: message.id || createId(),
+    name: message.name || player.name,
+    color: message.color || player.color,
+    text: String(message.text || "").slice(0, 90),
+    createdAt: message.createdAt || Date.now()
+  };
+
+  if (!normalized.text.trim() || chatMessages.some((item) => item.id === normalized.id)) return;
+
+  chatMessages.push(normalized);
+  chatMessages = chatMessages.slice(-40);
+  renderChat();
+  saveLobby();
+
+  if (shouldBroadcast) {
+    broadcast("chat-message", { message: normalized });
+  }
+}
+
+function sendChatMessage(event) {
+  event.preventDefault();
+  const text = refs.chatInput.value.trim();
+  if (!text) return;
+
+  refs.chatInput.value = "";
+  addChatMessage({
+    name: player.name,
+    color: player.color,
+    text
+  });
+}
+
+function renderChat() {
+  if (!refs.chatLog) return;
+
+  refs.chatLog.innerHTML = chatMessages.map((message) => `
+    <article class="chat-message">
+      <strong style="color:${message.color || "#4ecca3"}">${escapeHtml(message.name || "Player")}</strong>
+      <span>${escapeHtml(message.text || "")}</span>
+    </article>
+  `).join("");
+  refs.chatLog.scrollTop = refs.chatLog.scrollHeight;
 }
 
 function showResults() {
@@ -1256,6 +1359,8 @@ refs.rematchBtn.addEventListener("click", rematchAsHost);
 refs.closeResultsBtn.addEventListener("click", hideResults);
 refs.loginBtn.addEventListener("click", loginAccount);
 refs.signupBtn.addEventListener("click", createAccount);
+refs.playerColor.addEventListener("input", updateAccountColor);
+refs.chatForm.addEventListener("submit", sendChatMessage);
 
 window.addEventListener("beforeunload", () => {
   if (gameState !== PHASE.MENU) {

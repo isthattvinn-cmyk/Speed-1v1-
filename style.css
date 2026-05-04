@@ -22,6 +22,10 @@ select {
   font: inherit;
 }
 
+input[type="color"] {
+  padding: 4px;
+}
+
 button {
   cursor: pointer;
 }
@@ -259,7 +263,8 @@ select:focus {
 }
 
 #lobby-list,
-#spectate-panel {
+#spectate-panel,
+#chat-panel {
   position: absolute;
   z-index: 22;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -323,6 +328,56 @@ select:focus {
 #spectate-panel span,
 #spectate-panel small {
   display: block;
+}
+
+#chat-panel {
+  right: 16px;
+  top: 86px;
+  width: 280px;
+  max-height: 46vh;
+  padding: 12px;
+  display: none;
+}
+
+#chat-panel h2 {
+  margin: 0 0 10px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+#chat-log {
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.chat-message {
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  line-height: 1.35;
+}
+
+.chat-message strong {
+  display: block;
+  color: #4ecca3;
+  font-size: 0.8rem;
+}
+
+#chat-form {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+#chat-form input,
+#chat-form button {
+  min-height: 38px;
 }
 
 #results-panel {
@@ -425,6 +480,10 @@ select:focus {
 
   #lobby-list {
     display: none;
+  }
+
+  #chat-panel {
+    display: none !important;
   }
 
   .hint {

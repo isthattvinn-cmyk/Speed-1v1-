@@ -59,6 +59,10 @@
             <span>Password</span>
             <input id="account-password" type="password" maxlength="32" autocomplete="current-password" placeholder="Password">
           </label>
+          <label>
+            <span>Player color</span>
+            <input id="player-color" type="color" value="#ff4b5c">
+          </label>
           <div class="button-row">
             <button class="btn-primary" id="login-btn" type="button">Login</button>
             <button class="btn-secondary" id="signup-btn" type="button">Create Account</button>
@@ -113,6 +117,15 @@
 
     <button id="leave-btn" type="button">Leave</button>
     <button id="start-race-btn" type="button">Start</button>
+
+    <aside id="chat-panel">
+      <h2>Chat</h2>
+      <div id="chat-log"></div>
+      <form id="chat-form">
+        <input id="chat-input" maxlength="90" autocomplete="off" placeholder="Message">
+        <button class="btn-primary" type="submit">Send</button>
+      </form>
+    </aside>
 
     <section id="results-panel" class="hidden">
       <div class="results-card">
