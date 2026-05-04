@@ -1,0 +1,843 @@
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+const miniCanvas = document.getElementById("minimap-canvas");
+const miniCtx = miniCanvas.getContext("2d");
+
+const refs = {
+  partyCode: document.getElementById("party-code"),
+  timer: document.getElementById("timer"),
+  progress: document.getElementById("progress"),
+  status: document.getElementById("status"),
+  overlay: document.getElementById("overlay"),
+  message: document.getElementById("message"),
+  createForm: document.getElementById("create-form"),
+  joinForm: document.getElementById("join-form"),
+  soloBtn: document.getElementById("solo-btn"),
+  hostName: document.getElementById("host-name"),
+  guestName: document.getElementById("guest-name"),
+  joinCode: document.getElementById("join-code"),
+  lengthSelect: document.getElementById("length-select"),
+  leaveBtn: document.getElementById("leave-btn")
+};
+
+const LOBBY_PREFIX = "cave-swinger-lobby-";
+const TARGET_FPS = 60;
+const GRAVITY = 0.45;
+const CENTER_PULL = GRAVITY * 0.15;
+const AIR_RESISTANCE = 0.9995;
+const SWING_FORCE = 0.315;
+const AIR_STRAFE_FORCE = 0.5625;
+const CLIMB_SPEED = 8.0;
+const TENSION_ELASTICITY = 0.05;
+const TILE_SIZE = 60;
+const BASE_GRID_WIDTH = 450;
+const GRID_HEIGHT = 160;
+const PLAYER_COLORS = ["#ff4b5c", "#4ecca3", "#f9d423", "#64b5f6"];
+
+let gridWidth = BASE_GRID_WIDTH;
+let gameState = "MENU";
+let lastTime = performance.now();
+let cameraX = 0;
+let cameraY = 0;
+let particles = [];
+let tiles = [];
+let cavePath = [];
+let checkpoints = [];
+let exitPortal = null;
+let keys = {};
+let mouseX = 0;
+let mouseY = 0;
+let channel = null;
+let lobby = null;
+
+const player = {
+  id: "",
+  name: "Runner",
+  color: PLAYER_COLORS[0],
+  x: 0,
+  y: 0,
+  width: 28,
+  height: 28,
+  velX: 0,
+  velY: 0,
+  isAttached: false,
+  anchorX: 0,
+  anchorY: 0,
+  ropeLength: 0,
+  checkpointIndex: 0,
+  finished: false,
+  finishTime: null
+};
+
+const remotePlayers = new Map();
+
+function createId() {
+  return globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `p-${Date.now()}-${Math.random()}`;
+}
+
+function createCode() {
+  return String(Math.floor(10000 + Math.random() * 90000));
+}
+
+function createSeed() {
+  return Math.floor(100000000 + Math.random() * 900000000);
+}
+
+function seededRandom(seed) {
+  let value = seed % 2147483647;
+  if (value <= 0) value += 2147483646;
+  return () => {
+    value = (value * 16807) % 2147483647;
+    return (value - 1) / 2147483646;
+  };
+}
+
+function readLobby(code) {
+  try {
+    return JSON.parse(localStorage.getItem(`${LOBBY_PREFIX}${code}`));
+  } catch (error) {
+    return null;
+  }
+}
+
+function saveLobby() {
+  if (!lobby || lobby.code === "SOLO") return;
+
+  localStorage.setItem(`${LOBBY_PREFIX}${lobby.code}`, JSON.stringify({
+    code: lobby.code,
+    seed: lobby.seed,
+    lengthScale: lobby.lengthScale,
+    createdAt: lobby.createdAt,
+    startTime: lobby.startTime,
+    winner: lobby.winner,
+    hostId: lobby.hostId,
+    players: [snapshotPlayer(player), ...remotePlayers.values()].map((item) => ({
+      ...item,
+      lastSeen: Date.now()
+    }))
+  }));
+}
+
+function snapshotPlayer(source) {
+  return {
+    id: source.id,
+    name: source.name,
+    color: source.color,
+    x: source.x,
+    y: source.y,
+    width: source.width,
+    height: source.height,
+    velX: source.velX,
+    velY: source.velY,
+    isAttached: source.isAttached,
+    anchorX: source.anchorX,
+    anchorY: source.anchorY,
+    ropeLength: source.ropeLength,
+    checkpointIndex: source.checkpointIndex,
+    finished: source.finished,
+    finishTime: source.finishTime,
+    lastSeen: Date.now()
+  };
+}
+
+function setupChannel(code) {
+  if (channel) channel.close();
+  if (!("BroadcastChannel" in window) || code === "SOLO") {
+    channel = null;
+    return;
+  }
+
+  channel = new BroadcastChannel(`cave-swinger-${code}`);
+  channel.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || data.playerId === player.id || !lobby) return;
+
+    if (data.type === "player-update") {
+      remotePlayers.set(data.player.id, {
+        ...data.player,
+        lastSeen: Date.now()
+      });
+    }
+
+    if (data.type === "player-left") {
+      remotePlayers.delete(data.playerId);
+      saveLobby();
+    }
+
+    if (data.type === "winner") {
+      lobby.winner = data.winner;
+    }
+  });
+}
+
+function broadcast(type, payload = {}) {
+  if (!channel) return;
+  channel.postMessage({ type, playerId: player.id, ...payload });
+}
+
+function generateLevel(seed, lengthScale) {
+  tiles = [];
+  particles = [];
+  cavePath = [];
+  checkpoints = [];
+
+  const random = seededRandom(seed);
+  gridWidth = Math.max(120, Math.round(BASE_GRID_WIDTH * lengthScale));
+  const grid = Array(GRID_HEIGHT).fill().map(() => Array(gridWidth).fill("X"));
+  let centerLine = Math.floor(GRID_HEIGHT / 2);
+  const caveHeight = 24;
+
+  for (let x = 0; x < gridWidth; x += 1) {
+    if (x > 15) {
+      const roll = random();
+      if (roll < 0.15) centerLine -= 4;
+      else if (roll < 0.30) centerLine += 4;
+      else if (roll < 0.50) centerLine += random() > 0.5 ? 2 : -2;
+    }
+
+    centerLine = Math.max(25, Math.min(GRID_HEIGHT - 25, centerLine));
+    cavePath.push(centerLine);
+
+    const ceilingNoise = Math.sin(x * 0.2) * 4;
+    const floorNoise = Math.cos(x * 0.15) * 4;
+    const ceilingY = Math.floor(centerLine - caveHeight / 2 + ceilingNoise);
+    const floorY = Math.floor(centerLine + caveHeight / 2 + floorNoise);
+
+    for (let y = 0; y < GRID_HEIGHT; y += 1) {
+      if (y > ceilingY && y < floorY) grid[y][x] = " ";
+    }
+  }
+
+  grid.forEach((row, y) => {
+    row.forEach((char, x) => {
+      if (char === "X") {
+        tiles.push({ x: x * TILE_SIZE, y: y * TILE_SIZE, w: TILE_SIZE, h: TILE_SIZE });
+      }
+    });
+  });
+
+  for (let i = 0; i < 10; i += 1) {
+    const gridX = Math.floor((gridWidth - 1) * (i / 10));
+    checkpoints.push({
+      index: i,
+      percent: i * 10,
+      x: gridX * TILE_SIZE + TILE_SIZE / 2,
+      y: cavePath[gridX] * TILE_SIZE
+    });
+  }
+
+  exitPortal = {
+    x: (gridWidth - 5) * TILE_SIZE,
+    y: cavePath[gridWidth - 1] * TILE_SIZE - TILE_SIZE * 5,
+    w: TILE_SIZE,
+    h: TILE_SIZE * 12
+  };
+}
+
+function resetPlayer() {
+  player.x = 5 * TILE_SIZE;
+  player.y = cavePath[5] * TILE_SIZE;
+  player.velX = 0;
+  player.velY = 0;
+  player.isAttached = false;
+  player.anchorX = 0;
+  player.anchorY = 0;
+  player.ropeLength = 0;
+  player.checkpointIndex = 0;
+  player.finished = false;
+  player.finishTime = null;
+  cameraX = player.x - canvas.width / 2;
+  cameraY = player.y - canvas.height / 2;
+  attachWeb(false);
+}
+
+function startRun(config, localName, colorIndex) {
+  lobby = {
+    code: config.code,
+    seed: config.seed,
+    lengthScale: Number(config.lengthScale || 1),
+    createdAt: config.createdAt || Date.now(),
+    startTime: config.startTime || Date.now(),
+    winner: config.winner || null,
+    hostId: config.hostId || "",
+    solo: config.code === "SOLO"
+  };
+
+  player.id = config.localPlayerId || createId();
+  player.name = localName || (lobby.solo ? "Solo" : "Runner");
+  player.color = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
+  remotePlayers.clear();
+  (config.players || []).forEach((remote) => {
+    if (remote.id !== player.id) remotePlayers.set(remote.id, remote);
+  });
+
+  generateLevel(lobby.seed, lobby.lengthScale);
+  resetPlayer();
+  setupChannel(lobby.code);
+  gameState = "PLAYING";
+  refs.overlay.style.display = "none";
+  refs.partyCode.textContent = lobby.code;
+  refs.status.textContent = lobby.solo ? "Solo run" : "Waiting";
+  refs.message.textContent = "Create a 5 digit lobby, join one, or practice solo. First player through the exit wins.";
+  saveLobby();
+  broadcast("player-update", { player: snapshotPlayer(player) });
+}
+
+function createLobby(event) {
+  event.preventDefault();
+
+  let code = createCode();
+  while (readLobby(code)) code = createCode();
+
+  const hostId = createId();
+  const config = {
+    code,
+    seed: createSeed(),
+    lengthScale: Number(refs.lengthSelect.value),
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    winner: null,
+    hostId,
+    localPlayerId: hostId,
+    players: []
+  };
+
+  startRun(config, refs.hostName.value.trim() || "Host", 0);
+  lobby.hostId = hostId;
+  saveLobby();
+}
+
+function startSolo() {
+  startRun({
+    code: "SOLO",
+    seed: createSeed(),
+    lengthScale: Number(refs.lengthSelect.value),
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    winner: null,
+    players: []
+  }, refs.hostName.value.trim() || "Solo", 0);
+}
+
+function joinLobby(event) {
+  event.preventDefault();
+  const code = refs.joinCode.value.trim();
+
+  if (!/^\d{5}$/.test(code)) {
+    refs.message.textContent = "Enter a 5 digit party code.";
+    return;
+  }
+
+  const config = readLobby(code);
+  if (!config) {
+    refs.message.textContent = "Lobby not found. Create a lobby first, then join with the 5 digit code.";
+    return;
+  }
+
+  startRun(config, refs.guestName.value.trim() || "Runner", (config.players || []).length + 1);
+}
+
+function leaveGame() {
+  if (gameState === "PLAYING") {
+    broadcast("player-left");
+    saveLobby();
+  }
+  gameState = "MENU";
+  lobby = null;
+  remotePlayers.clear();
+  if (channel) channel.close();
+  channel = null;
+  refs.overlay.style.display = "flex";
+  refs.status.textContent = "Menu";
+  refs.message.textContent = "Left the run. Create or join another 5 digit party.";
+}
+
+function attachWeb(isMouse = false, targetWorldX = 0, targetWorldY = 0) {
+  const px = player.x + player.width / 2;
+  const py = player.y + player.height / 2;
+  let bestTile = null;
+  let bestScore = -Infinity;
+
+  if (isMouse && targetWorldY < py) {
+    const dirX = targetWorldX - px;
+    const dirY = targetWorldY - py;
+    const length = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+    const normX = dirX / length;
+    const normY = dirY / length;
+
+    tiles.forEach((tile) => {
+      if (tile.y + tile.h >= py) return;
+      const tileCenterX = tile.x + tile.w / 2;
+      const tileCenterY = tile.y + tile.h;
+      const toTileX = tileCenterX - px;
+      const toTileY = tileCenterY - py;
+      const dist = Math.sqrt(toTileX * toTileX + toTileY * toTileY);
+      const dot = toTileX * normX + toTileY * normY;
+      const alignment = dot / (dist + 1);
+      const score = alignment * 120 - dist * 0.1;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestTile = tile;
+      }
+    });
+  } else {
+    let minYOverlap = -Infinity;
+    tiles.forEach((tile) => {
+      if (px >= tile.x && px <= tile.x + tile.w && tile.y + tile.h <= py && tile.y + tile.h > minYOverlap) {
+        minYOverlap = tile.y + tile.h;
+        bestTile = tile;
+      }
+    });
+  }
+
+  if (bestTile) {
+    player.isAttached = true;
+    player.anchorX = bestTile.x + bestTile.w / 2;
+    player.anchorY = bestTile.y + bestTile.h;
+    const dx = px - player.anchorX;
+    const dy = py - player.anchorY;
+    player.ropeLength = Math.sqrt(dx * dx + dy * dy);
+    player.velY *= 0.5;
+  }
+}
+
+function update(dt) {
+  if (gameState !== "PLAYING") return;
+
+  if (!player.finished) {
+    updatePlayerPhysics(dt);
+    updateCheckpoints();
+    checkFailureAndFinish();
+    saveLobby();
+    broadcast("player-update", { player: snapshotPlayer(player) });
+  }
+
+  pruneRemotePlayers();
+  updateCamera(dt);
+  updateHud();
+}
+
+function updatePlayerPhysics(dt) {
+  const speed = Math.sqrt(player.velX * player.velX + player.velY * player.velY);
+  if (speed > 14 && Math.random() < 0.6) {
+    particles.push({
+      x: player.x + player.width / 2,
+      y: player.y + player.height / 2,
+      vx: -player.velX * 0.05,
+      vy: -player.velY * 0.05,
+      life: 1.0
+    });
+  }
+
+  particles.forEach((particle, index) => {
+    particle.x += particle.vx;
+    particle.y += particle.vy;
+    particle.life -= 0.06 * dt;
+    if (particle.life <= 0) particles.splice(index, 1);
+  });
+
+  const gridX = Math.max(0, Math.min(gridWidth - 1, Math.floor((player.x + player.width / 2) / TILE_SIZE)));
+  const targetCenterY = cavePath[gridX] * TILE_SIZE;
+  const currentY = player.y + player.height / 2;
+  const assistPull = (currentY < targetCenterY ? 1 : -1) * CENTER_PULL;
+
+  if (player.isAttached) {
+    if (keys.KeyW || keys.ArrowUp) player.ropeLength = Math.max(30, player.ropeLength - CLIMB_SPEED * dt);
+    if (keys.KeyS || keys.ArrowDown) player.ropeLength = Math.min(1500, player.ropeLength + CLIMB_SPEED * dt);
+    if (keys.KeyA || keys.ArrowLeft) player.velX -= SWING_FORCE * 0.85 * dt;
+    if (keys.KeyD || keys.ArrowRight) player.velX += SWING_FORCE * 0.60 * dt;
+
+    player.velY += (GRAVITY + assistPull) * dt;
+    let nextX = player.x + player.width / 2 + player.velX * dt;
+    let nextY = player.y + player.height / 2 + player.velY * dt;
+    const dx = nextX - player.anchorX;
+    const dy = nextY - player.anchorY;
+    const currentDist = Math.sqrt(dx * dx + dy * dy);
+
+    if (currentDist > player.ropeLength) {
+      const nx = dx / currentDist;
+      const ny = dy / currentDist;
+      const overstretch = currentDist - player.ropeLength;
+      nextX = player.anchorX + nx * player.ropeLength;
+      nextY = player.anchorY + ny * player.ropeLength;
+      const dot = player.velX * nx + player.velY * ny;
+      player.velX = (player.velX - dot * nx) * 0.999;
+      player.velY = (player.velY - dot * ny) * 0.999;
+      player.velX -= nx * overstretch * TENSION_ELASTICITY;
+      player.velY -= ny * overstretch * TENSION_ELASTICITY;
+    }
+
+    player.x = nextX - player.width / 2;
+    player.y = nextY - player.height / 2;
+  } else {
+    if (keys.KeyA || keys.ArrowLeft) player.velX -= AIR_STRAFE_FORCE * 0.85 * dt;
+    if (keys.KeyD || keys.ArrowRight) player.velX += AIR_STRAFE_FORCE * 0.60 * dt;
+    if (keys.KeyW || keys.ArrowUp) player.velY -= 0.15 * dt;
+    if (keys.KeyS || keys.ArrowDown) player.velY += 0.15 * dt;
+
+    player.velY += (GRAVITY + assistPull) * dt;
+    player.velX *= Math.pow(AIR_RESISTANCE, dt);
+    player.x += player.velX * dt;
+    player.y += player.velY * dt;
+  }
+}
+
+function updateCheckpoints() {
+  const finishX = exitPortal.x;
+  const progress = Math.max(0, Math.min(0.999, player.x / finishX));
+  const checkpointIndex = Math.floor(progress * 10);
+  if (checkpointIndex > player.checkpointIndex) {
+    player.checkpointIndex = checkpointIndex;
+  }
+}
+
+function respawnAtCheckpoint() {
+  if (gameState !== "PLAYING") return;
+  const checkpoint = checkpoints[player.checkpointIndex] || checkpoints[0];
+  player.x = checkpoint.x;
+  player.y = checkpoint.y;
+  player.velX = 0;
+  player.velY = 0;
+  player.isAttached = false;
+  attachWeb(false);
+}
+
+function checkFailureAndFinish() {
+  for (const tile of tiles) {
+    if (player.x < tile.x + tile.w && player.x + player.width > tile.x && player.y < tile.y + tile.h && player.y + player.height > tile.y) {
+      respawnAtCheckpoint();
+      return;
+    }
+  }
+
+  if (player.y > (GRID_HEIGHT + 10) * TILE_SIZE || player.y < -10 * TILE_SIZE) {
+    respawnAtCheckpoint();
+  }
+
+  if (exitPortal && player.x > exitPortal.x && !player.finished) {
+    player.finished = true;
+    player.finishTime = Date.now() - lobby.startTime;
+    lobby.winner = {
+      id: player.id,
+      name: player.name,
+      time: player.finishTime
+    };
+    refs.message.textContent = `${player.name} wins in ${formatTime(player.finishTime)}.`;
+    saveLobby();
+    broadcast("player-update", { player: snapshotPlayer(player) });
+    broadcast("winner", { winner: lobby.winner });
+  }
+}
+
+function pruneRemotePlayers() {
+  const now = Date.now();
+  remotePlayers.forEach((remote, id) => {
+    if (now - (remote.lastSeen || now) > 12000) remotePlayers.delete(id);
+  });
+}
+
+function updateCamera(dt) {
+  cameraX += (player.x - canvas.width / 2 - cameraX) * 0.1 * dt;
+  cameraY += (player.y - canvas.height / 2 - cameraY) * 0.1 * dt;
+  cameraX = Math.max(0, Math.min(cameraX, gridWidth * TILE_SIZE - canvas.width));
+  cameraY = Math.max(0, Math.min(cameraY, GRID_HEIGHT * TILE_SIZE - canvas.height));
+}
+
+function updateHud() {
+  if (!lobby) {
+    refs.timer.textContent = "0:00.00";
+    refs.progress.textContent = "0%";
+    return;
+  }
+
+  const elapsed = player.finishTime || Date.now() - lobby.startTime;
+  const progress = Math.max(0, Math.min(100, Math.floor((player.x / exitPortal.x) * 100)));
+  refs.timer.textContent = formatTime(elapsed);
+  refs.progress.textContent = `${progress}%`;
+
+  if (lobby.winner) {
+    refs.status.textContent = `${lobby.winner.name} wins`;
+  } else if (lobby.solo) {
+    refs.status.textContent = "Solo run";
+  } else {
+    refs.status.textContent = remotePlayers.size ? `${remotePlayers.size + 1} racing` : "Waiting";
+  }
+}
+
+function drawMinimap() {
+  miniCtx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+  const scaleX = miniCanvas.width / gridWidth;
+  const scaleY = miniCanvas.height / GRID_HEIGHT;
+
+  miniCtx.beginPath();
+  miniCtx.strokeStyle = "rgba(78, 204, 163, 0.42)";
+  miniCtx.lineWidth = 4;
+  cavePath.forEach((pathY, index) => {
+    const x = index * scaleX;
+    const y = pathY * scaleY;
+    if (index === 0) miniCtx.moveTo(x, y);
+    else miniCtx.lineTo(x, y);
+  });
+  miniCtx.stroke();
+
+  checkpoints.forEach((checkpoint) => {
+    miniCtx.fillStyle = checkpoint.index <= player.checkpointIndex ? "#4ecca3" : "rgba(255,255,255,0.45)";
+    miniCtx.fillRect((checkpoint.x / TILE_SIZE) * scaleX - 1, checkpoint.y / TILE_SIZE * scaleY - 5, 2, 10);
+  });
+
+  remotePlayers.forEach((remote) => {
+    miniCtx.fillStyle = remote.color || "#fff";
+    miniCtx.globalAlpha = 0.45;
+    miniCtx.beginPath();
+    miniCtx.arc((remote.x / TILE_SIZE) * scaleX, (remote.y / TILE_SIZE) * scaleY, 3, 0, Math.PI * 2);
+    miniCtx.fill();
+    miniCtx.globalAlpha = 1;
+  });
+
+  miniCtx.fillStyle = player.color;
+  miniCtx.beginPath();
+  miniCtx.arc((player.x / TILE_SIZE) * scaleX, (player.y / TILE_SIZE) * scaleY, 3.5, 0, Math.PI * 2);
+  miniCtx.fill();
+}
+
+function draw() {
+  ctx.fillStyle = "#0a0a12";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!cavePath.length) return;
+
+  ctx.save();
+  ctx.translate(-Math.floor(cameraX), -Math.floor(cameraY));
+  drawGuideLine();
+  drawCheckpoints();
+  drawExit();
+  drawRopesAndTiles();
+  drawParticles();
+  drawRemotePlayers();
+  drawPlayer(player, 1);
+  ctx.restore();
+
+  if (gameState === "PLAYING") drawMinimap();
+}
+
+function drawGuideLine() {
+  const pxGrid = Math.floor(player.x / TILE_SIZE);
+  const lookAhead = 15;
+
+  ctx.beginPath();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+  ctx.lineWidth = 4;
+  ctx.setLineDash([10, 5]);
+  cavePath.forEach((pathY, index) => {
+    const x = index * TILE_SIZE + TILE_SIZE / 2;
+    const y = pathY * TILE_SIZE;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (gameState !== "PLAYING") return;
+
+  const currentSpeed = Math.abs(player.velX);
+  let curveIntensity = 0;
+  for (let i = pxGrid; i < pxGrid + lookAhead && i < cavePath.length - 1; i += 1) {
+    curveIntensity += Math.abs(cavePath[i + 1] - cavePath[i]);
+  }
+
+  let lineColor = "#4ecca3";
+  if (curveIntensity > 8) lineColor = "#ff4b5c";
+  else if (curveIntensity > 4 || currentSpeed < 5) lineColor = "#f9d423";
+
+  ctx.beginPath();
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth = 6;
+  ctx.shadowBlur = 15;
+  ctx.shadowColor = lineColor;
+  for (let i = pxGrid; i < pxGrid + lookAhead && i < cavePath.length; i += 1) {
+    const x = i * TILE_SIZE + TILE_SIZE / 2;
+    const y = cavePath[i] * TILE_SIZE;
+    if (i === pxGrid) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+}
+
+function drawCheckpoints() {
+  checkpoints.forEach((checkpoint) => {
+    const reached = checkpoint.index <= player.checkpointIndex;
+    ctx.strokeStyle = reached ? "rgba(78, 204, 163, 0.88)" : "rgba(255,255,255,0.24)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(checkpoint.x, checkpoint.y - 190);
+    ctx.lineTo(checkpoint.x, checkpoint.y + 190);
+    ctx.stroke();
+
+    ctx.fillStyle = reached ? "#4ecca3" : "rgba(255,255,255,0.84)";
+    ctx.beginPath();
+    ctx.arc(checkpoint.x, checkpoint.y - 120, 18, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = "#0a0a12";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(checkpoint.x - 8, checkpoint.y - 120);
+    ctx.lineTo(checkpoint.x - 1, checkpoint.y - 112);
+    ctx.lineTo(checkpoint.x + 11, checkpoint.y - 130);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(255,255,255,0.72)";
+    ctx.font = "700 14px Segoe UI";
+    ctx.textAlign = "center";
+    ctx.fillText(`${checkpoint.percent}%`, checkpoint.x, checkpoint.y - 146);
+  });
+}
+
+function drawExit() {
+  if (!exitPortal) return;
+  ctx.fillStyle = "rgba(78, 204, 163, 0.16)";
+  ctx.shadowBlur = 35;
+  ctx.shadowColor = "#4ecca3";
+  ctx.fillRect(exitPortal.x, exitPortal.y, exitPortal.w, exitPortal.h);
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "#4ecca3";
+  ctx.lineWidth = 4;
+  ctx.strokeRect(exitPortal.x, exitPortal.y, exitPortal.w, exitPortal.h);
+}
+
+function drawRopesAndTiles() {
+  if (player.isAttached) {
+    drawRope(player, 1);
+  }
+
+  remotePlayers.forEach((remote) => {
+    if (remote.isAttached) drawRope(remote, 0.32);
+  });
+
+  ctx.fillStyle = "#161625";
+  tiles.forEach((tile) => {
+    if (tile.x + tile.w > cameraX && tile.x < cameraX + canvas.width && tile.y + tile.h > cameraY && tile.y < cameraY + canvas.height) {
+      ctx.fillRect(tile.x, tile.y, tile.w, tile.h);
+      ctx.strokeStyle = "#08080c";
+      ctx.strokeRect(tile.x, tile.y, tile.w, tile.h);
+    }
+  });
+}
+
+function drawRope(source, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.beginPath();
+  ctx.moveTo(source.anchorX, source.anchorY);
+  ctx.lineTo(source.x + source.width / 2, source.y + source.height / 2);
+  ctx.strokeStyle = "rgba(78, 204, 163, 0.8)";
+  ctx.lineWidth = 3;
+  ctx.setLineDash([8, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#fff";
+  ctx.beginPath();
+  ctx.arc(source.anchorX, source.anchorY, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawParticles() {
+  particles.forEach((particle) => {
+    ctx.fillStyle = `rgba(255, 75, 92, ${particle.life})`;
+    ctx.fillRect(particle.x, particle.y, 4, 4);
+  });
+}
+
+function drawRemotePlayers() {
+  remotePlayers.forEach((remote) => drawPlayer(remote, 0.38));
+}
+
+function drawPlayer(source, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = source.color || "#ff4b5c";
+  ctx.shadowBlur = alpha === 1 ? 25 : 8;
+  ctx.shadowColor = source.color || "#ff4b5c";
+  ctx.fillRect(source.x, source.y, source.width, source.height);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(255,255,255,0.82)";
+  ctx.font = "700 14px Segoe UI";
+  ctx.textAlign = "center";
+  ctx.fillText(source.name || "Runner", source.x + source.width / 2, source.y - 10);
+  ctx.restore();
+}
+
+function gameLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / (1000 / TARGET_FPS), 2.0);
+  lastTime = timestamp;
+  update(dt);
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+function formatTime(ms) {
+  const totalSeconds = ms / 1000;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  const hundredths = Math.floor((totalSeconds % 1) * 100);
+  return `${minutes}:${String(seconds).padStart(2, "0")}.${String(hundredths).padStart(2, "0")}`;
+}
+
+canvas.addEventListener("mousemove", (event) => {
+  const rect = canvas.getBoundingClientRect();
+  mouseX = event.clientX - rect.left + cameraX;
+  mouseY = event.clientY - rect.top + cameraY;
+});
+
+canvas.addEventListener("mousedown", (event) => {
+  if (event.button === 0 && gameState === "PLAYING" && !player.finished) {
+    if (player.isAttached) player.isAttached = false;
+    else attachWeb(true, mouseX, mouseY);
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.code)) {
+    event.preventDefault();
+  }
+
+  if (event.code === "Space" && !keys.Space && gameState === "PLAYING" && !player.finished) {
+    if (player.isAttached) player.isAttached = false;
+    else attachWeb(false);
+  }
+
+  if (event.code === "KeyR") {
+    respawnAtCheckpoint();
+  }
+
+  keys[event.code] = true;
+});
+
+window.addEventListener("keyup", (event) => {
+  keys[event.code] = false;
+});
+
+refs.createForm.addEventListener("submit", createLobby);
+refs.joinForm.addEventListener("submit", joinLobby);
+refs.soloBtn.addEventListener("click", startSolo);
+refs.leaveBtn.addEventListener("click", leaveGame);
+
+window.addEventListener("beforeunload", () => {
+  if (gameState === "PLAYING") {
+    broadcast("player-left");
+    saveLobby();
+  }
+});
+
+window.addEventListener("resize", () => {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  miniCanvas.width = miniCanvas.offsetWidth;
+  miniCanvas.height = miniCanvas.offsetHeight;
+});
+
+window.dispatchEvent(new Event("resize"));
+requestAnimationFrame(gameLoop);
