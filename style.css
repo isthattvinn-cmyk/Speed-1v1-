@@ -195,7 +195,8 @@ select:focus {
 
 .btn-primary,
 .btn-secondary,
-#leave-btn {
+#leave-btn,
+#start-race-btn {
   min-height: 46px;
   padding: 10px 18px;
   border: 0;
@@ -221,11 +222,67 @@ select:focus {
   transform: scale(0.96);
 }
 
-#leave-btn {
+#leave-btn,
+#start-race-btn {
   position: absolute;
   top: 16px;
-  right: 16px;
   z-index: 30;
+}
+
+#leave-btn {
+  right: 16px;
+}
+
+#start-race-btn {
+  right: 104px;
+  display: none;
+  color: #1a1a2e;
+  background: #4ecca3;
+}
+
+#transition-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 18px;
+  color: white;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 700ms ease;
+}
+
+#transition-overlay.active {
+  opacity: 1;
+}
+
+#transition-overlay.countdown {
+  background: rgba(0, 0, 0, 0.38);
+}
+
+#transition-text {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: clamp(1.2rem, 3vw, 2rem);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+#countdown-text {
+  min-height: 1em;
+  color: #4ecca3;
+  font-size: clamp(4rem, 16vw, 11rem);
+  line-height: 0.9;
+  font-weight: 950;
+  text-shadow: 0 0 28px rgba(78, 204, 163, 0.75);
+}
+
+.hidden {
+  display: none !important;
 }
 
 .hint {

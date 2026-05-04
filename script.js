@@ -17,7 +17,11 @@ const refs = {
   guestName: document.getElementById("guest-name"),
   joinCode: document.getElementById("join-code"),
   lengthSelect: document.getElementById("length-select"),
-  leaveBtn: document.getElementById("leave-btn")
+  leaveBtn: document.getElementById("leave-btn"),
+  startRaceBtn: document.getElementById("start-race-btn"),
+  transitionOverlay: document.getElementById("transition-overlay"),
+  transitionText: document.getElementById("transition-text"),
+  countdownText: document.getElementById("countdown-text")
 };
 
 const LOBBY_PREFIX = "cave-swinger-lobby-";
@@ -31,11 +35,21 @@ const CLIMB_SPEED = 8.0;
 const TENSION_ELASTICITY = 0.05;
 const TILE_SIZE = 60;
 const BASE_GRID_WIDTH = 450;
+const LOBBY_LENGTH_SCALE = 0.5;
 const GRID_HEIGHT = 160;
 const PLAYER_COLORS = ["#ff4b5c", "#4ecca3", "#f9d423", "#64b5f6"];
+const PHASE = {
+  MENU: "MENU",
+  LOBBY: "LOBBY",
+  LOADING: "LOADING",
+  COUNTDOWN: "COUNTDOWN",
+  RACING: "RACING"
+};
+const COUNTDOWN_MS = 6000;
+const LOAD_FADE_MS = 900;
 
 let gridWidth = BASE_GRID_WIDTH;
-let gameState = "MENU";
+let gameState = PHASE.MENU;
 let lastTime = performance.now();
 let cameraX = 0;
 let cameraY = 0;
@@ -49,6 +63,7 @@ let mouseX = 0;
 let mouseY = 0;
 let channel = null;
 let lobby = null;
+let transitionTimer = null;
 
 const player = {
   id: "",
@@ -105,10 +120,15 @@ function saveLobby() {
 
   localStorage.setItem(`${LOBBY_PREFIX}${lobby.code}`, JSON.stringify({
     code: lobby.code,
-    seed: lobby.seed,
     lengthScale: lobby.lengthScale,
     createdAt: lobby.createdAt,
     startTime: lobby.startTime,
+    phase: lobby.phase,
+    lobbySeed: lobby.lobbySeed,
+    raceSeed: lobby.raceSeed,
+    loadingStartedAt: lobby.loadingStartedAt,
+    countdownStartedAt: lobby.countdownStartedAt,
+    raceStartedAt: lobby.raceStartedAt,
     winner: lobby.winner,
     hostId: lobby.hostId,
     players: [snapshotPlayer(player), ...remotePlayers.values()].map((item) => ({
@@ -166,6 +186,10 @@ function setupChannel(code) {
 
     if (data.type === "winner") {
       lobby.winner = data.winner;
+    }
+
+    if (data.type === "race-start") {
+      beginRaceTransition(data.race);
     }
   });
 }
@@ -251,13 +275,30 @@ function resetPlayer() {
   attachWeb(false);
 }
 
+function isHost() {
+  return lobby && lobby.hostId === player.id;
+}
+
+function isRaceActive() {
+  return lobby?.phase === PHASE.RACING;
+}
+
+function isFreeRoam() {
+  return lobby?.phase === PHASE.LOBBY;
+}
+
 function startRun(config, localName, colorIndex) {
   lobby = {
     code: config.code,
-    seed: config.seed,
+    phase: config.phase || (config.code === "SOLO" ? PHASE.RACING : PHASE.LOBBY),
+    lobbySeed: config.lobbySeed || config.seed || createSeed(),
+    raceSeed: config.raceSeed || config.seed || createSeed(),
     lengthScale: Number(config.lengthScale || 1),
     createdAt: config.createdAt || Date.now(),
-    startTime: config.startTime || Date.now(),
+    startTime: config.startTime || config.raceStartedAt || Date.now(),
+    loadingStartedAt: config.loadingStartedAt || null,
+    countdownStartedAt: config.countdownStartedAt || null,
+    raceStartedAt: config.raceStartedAt || config.startTime || Date.now(),
     winner: config.winner || null,
     hostId: config.hostId || "",
     solo: config.code === "SOLO"
@@ -271,14 +312,22 @@ function startRun(config, localName, colorIndex) {
     if (remote.id !== player.id) remotePlayers.set(remote.id, remote);
   });
 
-  generateLevel(lobby.seed, lobby.lengthScale);
+  const activeSeed = lobby.phase === PHASE.LOBBY ? lobby.lobbySeed : lobby.raceSeed;
+  const activeLength = lobby.phase === PHASE.LOBBY ? LOBBY_LENGTH_SCALE : lobby.lengthScale;
+  generateLevel(activeSeed, activeLength);
   resetPlayer();
   setupChannel(lobby.code);
-  gameState = "PLAYING";
+  gameState = lobby.phase;
   refs.overlay.style.display = "none";
   refs.partyCode.textContent = lobby.code;
-  refs.status.textContent = lobby.solo ? "Solo run" : "Waiting";
+  refs.status.textContent = lobby.solo ? "Solo run" : "Free roam";
   refs.message.textContent = "Create a 5 digit lobby, join one, or practice solo. First player through the exit wins.";
+  syncStartButton();
+
+  if (lobby.phase === PHASE.LOADING || lobby.phase === PHASE.COUNTDOWN) {
+    beginRaceTransition(lobby);
+  }
+
   saveLobby();
   broadcast("player-update", { player: snapshotPlayer(player) });
 }
@@ -292,10 +341,12 @@ function createLobby(event) {
   const hostId = createId();
   const config = {
     code,
-    seed: createSeed(),
+    phase: PHASE.LOBBY,
+    lobbySeed: createSeed(),
+    raceSeed: null,
     lengthScale: Number(refs.lengthSelect.value),
     createdAt: Date.now(),
-    startTime: Date.now(),
+    startTime: null,
     winner: null,
     hostId,
     localPlayerId: hostId,
@@ -310,10 +361,13 @@ function createLobby(event) {
 function startSolo() {
   startRun({
     code: "SOLO",
-    seed: createSeed(),
+    phase: PHASE.RACING,
+    lobbySeed: createSeed(),
+    raceSeed: createSeed(),
     lengthScale: Number(refs.lengthSelect.value),
     createdAt: Date.now(),
     startTime: Date.now(),
+    raceStartedAt: Date.now(),
     winner: null,
     players: []
   }, refs.hostName.value.trim() || "Solo", 0);
@@ -337,19 +391,88 @@ function joinLobby(event) {
   startRun(config, refs.guestName.value.trim() || "Runner", (config.players || []).length + 1);
 }
 
+function startRaceAsHost() {
+  if (!isHost() || !lobby || lobby.phase !== PHASE.LOBBY) return;
+
+  const now = Date.now();
+  const race = {
+    ...lobby,
+    phase: PHASE.LOADING,
+    raceSeed: createSeed(),
+    loadingStartedAt: now,
+    countdownStartedAt: now + LOAD_FADE_MS,
+    raceStartedAt: now + LOAD_FADE_MS + COUNTDOWN_MS,
+    startTime: now + LOAD_FADE_MS + COUNTDOWN_MS,
+    winner: null
+  };
+
+  beginRaceTransition(race);
+  broadcast("race-start", { race });
+}
+
+function beginRaceTransition(race) {
+  if (!lobby) return;
+
+  lobby.phase = race.phase || PHASE.LOADING;
+  lobby.raceSeed = race.raceSeed;
+  lobby.loadingStartedAt = race.loadingStartedAt;
+  lobby.countdownStartedAt = race.countdownStartedAt;
+  lobby.raceStartedAt = race.raceStartedAt;
+  lobby.startTime = race.raceStartedAt;
+  lobby.winner = null;
+  gameState = PHASE.LOADING;
+  syncStartButton();
+  saveLobby();
+
+  showTransition("Generating map...", "", true);
+  clearTimeout(transitionTimer);
+  const delay = Math.max(0, (lobby.countdownStartedAt || Date.now()) - Date.now());
+  transitionTimer = setTimeout(() => {
+    generateLevel(lobby.raceSeed, lobby.lengthScale);
+    resetPlayer();
+    lobby.phase = PHASE.COUNTDOWN;
+    gameState = PHASE.COUNTDOWN;
+    saveLobby();
+    broadcast("player-update", { player: snapshotPlayer(player) });
+    showTransition("Get ready", "", false);
+  }, delay);
+}
+
+function showTransition(text, countdown, solid) {
+  refs.transitionText.textContent = text;
+  refs.countdownText.textContent = countdown;
+  refs.transitionOverlay.classList.remove("hidden", "countdown");
+  if (!solid) refs.transitionOverlay.classList.add("countdown");
+  requestAnimationFrame(() => refs.transitionOverlay.classList.add("active"));
+}
+
+function hideTransition() {
+  clearTimeout(transitionTimer);
+  refs.transitionOverlay.classList.remove("active", "countdown");
+  refs.transitionOverlay.classList.add("hidden");
+  refs.countdownText.textContent = "";
+}
+
+function syncStartButton() {
+  const canStart = isHost() && lobby?.phase === PHASE.LOBBY;
+  refs.startRaceBtn.style.display = canStart ? "block" : "none";
+}
+
 function leaveGame() {
-  if (gameState === "PLAYING") {
+  if (gameState !== PHASE.MENU) {
     broadcast("player-left");
     saveLobby();
   }
-  gameState = "MENU";
+  gameState = PHASE.MENU;
   lobby = null;
   remotePlayers.clear();
   if (channel) channel.close();
   channel = null;
+  hideTransition();
   refs.overlay.style.display = "flex";
   refs.status.textContent = "Menu";
   refs.message.textContent = "Left the run. Create or join another 5 digit party.";
+  syncStartButton();
 }
 
 function attachWeb(isMouse = false, targetWorldX = 0, targetWorldY = 0) {
@@ -403,11 +526,20 @@ function attachWeb(isMouse = false, targetWorldX = 0, targetWorldY = 0) {
 }
 
 function update(dt) {
-  if (gameState !== "PLAYING") return;
+  if (gameState === PHASE.MENU) return;
+
+  updatePhase();
+
+  if (lobby?.phase === PHASE.LOADING) {
+    updateHud();
+    return;
+  }
 
   if (!player.finished) {
     updatePlayerPhysics(dt);
-    updateCheckpoints();
+    if (isRaceActive()) {
+      updateCheckpoints();
+    }
     checkFailureAndFinish();
     saveLobby();
     broadcast("player-update", { player: snapshotPlayer(player) });
@@ -416,6 +548,24 @@ function update(dt) {
   pruneRemotePlayers();
   updateCamera(dt);
   updateHud();
+}
+
+function updatePhase() {
+  if (!lobby) return;
+
+  if (lobby.phase === PHASE.COUNTDOWN) {
+    const remaining = Math.max(0, lobby.raceStartedAt - Date.now());
+    refs.countdownText.textContent = String(Math.ceil(remaining / 1000));
+    refs.transitionText.textContent = "Locked on";
+
+    if (remaining <= 0) {
+      lobby.phase = PHASE.RACING;
+      lobby.startTime = lobby.raceStartedAt;
+      gameState = PHASE.RACING;
+      hideTransition();
+      saveLobby();
+    }
+  }
 }
 
 function updatePlayerPhysics(dt) {
@@ -493,7 +643,7 @@ function updateCheckpoints() {
 }
 
 function respawnAtCheckpoint() {
-  if (gameState !== "PLAYING") return;
+  if (gameState === PHASE.MENU || gameState === PHASE.LOADING) return;
   const checkpoint = checkpoints[player.checkpointIndex] || checkpoints[0];
   player.x = checkpoint.x;
   player.y = checkpoint.y;
@@ -515,7 +665,7 @@ function checkFailureAndFinish() {
     respawnAtCheckpoint();
   }
 
-  if (exitPortal && player.x > exitPortal.x && !player.finished) {
+  if (isRaceActive() && exitPortal && player.x > exitPortal.x && !player.finished) {
     player.finished = true;
     player.finishTime = Date.now() - lobby.startTime;
     lobby.winner = {
@@ -551,15 +701,21 @@ function updateHud() {
     return;
   }
 
-  const elapsed = player.finishTime || Date.now() - lobby.startTime;
-  const progress = Math.max(0, Math.min(100, Math.floor((player.x / exitPortal.x) * 100)));
+  const elapsed = isRaceActive() ? player.finishTime || Date.now() - lobby.startTime : 0;
+  const progress = isRaceActive() ? Math.max(0, Math.min(100, Math.floor((player.x / exitPortal.x) * 100))) : 0;
   refs.timer.textContent = formatTime(elapsed);
-  refs.progress.textContent = `${progress}%`;
+  refs.progress.textContent = isRaceActive() ? `${progress}%` : "--";
 
   if (lobby.winner) {
     refs.status.textContent = `${lobby.winner.name} wins`;
+  } else if (lobby.phase === PHASE.LOADING) {
+    refs.status.textContent = "Generating";
+  } else if (lobby.phase === PHASE.COUNTDOWN) {
+    refs.status.textContent = "Countdown";
   } else if (lobby.solo) {
     refs.status.textContent = "Solo run";
+  } else if (lobby.phase === PHASE.LOBBY) {
+    refs.status.textContent = isHost() ? "Host lobby" : "Free roam";
   } else {
     refs.status.textContent = remotePlayers.size ? `${remotePlayers.size + 1} racing` : "Waiting";
   }
@@ -610,15 +766,17 @@ function draw() {
   ctx.save();
   ctx.translate(-Math.floor(cameraX), -Math.floor(cameraY));
   drawGuideLine();
-  drawCheckpoints();
-  drawExit();
+  if (lobby?.phase !== PHASE.LOBBY) {
+    drawCheckpoints();
+    drawExit();
+  }
   drawRopesAndTiles();
   drawParticles();
   drawRemotePlayers();
   drawPlayer(player, 1);
   ctx.restore();
 
-  if (gameState === "PLAYING") drawMinimap();
+  if (gameState !== PHASE.MENU) drawMinimap();
 }
 
 function drawGuideLine() {
@@ -638,7 +796,7 @@ function drawGuideLine() {
   ctx.stroke();
   ctx.setLineDash([]);
 
-  if (gameState !== "PLAYING") return;
+  if (gameState === PHASE.MENU) return;
 
   const currentSpeed = Math.abs(player.velX);
   let curveIntensity = 0;
@@ -793,9 +951,12 @@ canvas.addEventListener("mousemove", (event) => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
-  if (event.button === 0 && gameState === "PLAYING" && !player.finished) {
-    if (player.isAttached) player.isAttached = false;
-    else attachWeb(true, mouseX, mouseY);
+  if (event.button === 0 && gameState !== PHASE.MENU && gameState !== PHASE.LOADING && !player.finished) {
+    if (player.isAttached) {
+      if (lobby?.phase !== PHASE.COUNTDOWN) player.isAttached = false;
+      return;
+    }
+    attachWeb(true, mouseX, mouseY);
   }
 });
 
@@ -804,9 +965,12 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
   }
 
-  if (event.code === "Space" && !keys.Space && gameState === "PLAYING" && !player.finished) {
-    if (player.isAttached) player.isAttached = false;
-    else attachWeb(false);
+  if (event.code === "Space" && !keys.Space && gameState !== PHASE.MENU && gameState !== PHASE.LOADING && !player.finished) {
+    if (player.isAttached) {
+      if (lobby?.phase !== PHASE.COUNTDOWN) player.isAttached = false;
+    } else {
+      attachWeb(false);
+    }
   }
 
   if (event.code === "KeyR") {
@@ -824,9 +988,10 @@ refs.createForm.addEventListener("submit", createLobby);
 refs.joinForm.addEventListener("submit", joinLobby);
 refs.soloBtn.addEventListener("click", startSolo);
 refs.leaveBtn.addEventListener("click", leaveGame);
+refs.startRaceBtn.addEventListener("click", startRaceAsHost);
 
 window.addEventListener("beforeunload", () => {
-  if (gameState === "PLAYING") {
+  if (gameState !== PHASE.MENU) {
     broadcast("player-left");
     saveLobby();
   }
