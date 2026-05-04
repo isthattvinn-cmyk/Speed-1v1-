@@ -7,7 +7,9 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 - Create Lobby with a 5 digit party code
 - Join Lobby with a 5 digit party code
 - Local username/password account creation and login for saved names on this browser
-- Lobby player list with names, host tag, progress, and finished state
+- Level system from 1 to 100
+- Winners earn 100 XP toward their local account level
+- Lobby player list with names, levels, host tag, progress, and finished state
 - Single-player practice mode
 - Online lobbies start in a free-roam random cave while players gather
 - Host-only `Start` button begins the race when everyone is in
@@ -36,6 +38,22 @@ The app is served at:
 http://127.0.0.1:4173/
 ```
 
-Lobby sync uses `localStorage` and `BroadcastChannel`, so it works between tabs or windows in the same browser. Playing between different computers needs a small realtime server.
+Lobby sync uses `localStorage` and `BroadcastChannel`, so it works between tabs or windows in the same browser. Playing between different computers needs a small realtime server; without one, the other device cannot see the host's local lobby data.
 
 Accounts are local-only for this static version. Usernames and passwords are stored in this browser's `localStorage`; a real public login system needs a server and proper password hashing.
+
+## Render Server Deploy
+
+This repo includes a basic WebSocket server in the `server/` folder.
+
+Use these Render settings:
+
+```text
+Build Command:
+cd server && npm install
+
+Start Command:
+cd server && npm start
+```
+
+If Render is set to `npm install` at the repo root, it will fail because the `package.json` file is inside `server/`.

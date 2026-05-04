@@ -315,6 +315,14 @@ select:focus {
   color: rgba(255, 255, 255, 0.58);
 }
 
+.player-row em,
+.result-row em {
+  color: #4ecca3;
+  font-style: normal;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 #spectate-panel {
   left: 50%;
   bottom: 58px;

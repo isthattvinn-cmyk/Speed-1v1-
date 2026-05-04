@@ -45,6 +45,9 @@ const refs = {
 const LOBBY_PREFIX = "cave-swinger-lobby-";
 const ACCOUNT_KEY = "cave-swinger-accounts-v1";
 const CURRENT_ACCOUNT_KEY = "cave-swinger-current-account-v1";
+const WIN_XP = 100;
+const XP_PER_LEVEL = 100;
+const MAX_LEVEL = 100;
 const TARGET_FPS = 60;
 const GRAVITY = 0.45;
 const CENTER_PULL = GRAVITY * 0.15;
@@ -106,7 +109,10 @@ const player = {
   ropeLength: 0,
   checkpointIndex: 0,
   finished: false,
-  finishTime: null
+  finishTime: null,
+  level: 1,
+  xp: 0,
+  winRewarded: false
 };
 
 const remotePlayers = new Map();
@@ -131,8 +137,52 @@ function saveAccounts(accounts) {
   localStorage.setItem(ACCOUNT_KEY, JSON.stringify(accounts));
 }
 
+function getLevelFromXp(xp = 0) {
+  return Math.max(1, Math.min(MAX_LEVEL, Math.floor(Number(xp || 0) / XP_PER_LEVEL) + 1));
+}
+
+function normalizeAccount(account) {
+  return {
+    password: account?.password || "",
+    color: account?.color || refs.playerColor.value || PLAYER_COLORS[0],
+    xp: Number(account?.xp || 0)
+  };
+}
+
+function getCurrentAccountStats() {
+  if (!currentAccount) {
+    return { xp: 0, level: 1 };
+  }
+
+  const account = normalizeAccount(loadAccounts()[currentAccount]);
+  return {
+    xp: account.xp,
+    level: getLevelFromXp(account.xp)
+  };
+}
+
+function syncPlayerProfileFromAccount() {
+  const stats = getCurrentAccountStats();
+  player.xp = stats.xp;
+  player.level = stats.level;
+}
+
+function updateAccountMessage() {
+  if (!currentAccount) {
+    refs.accountMessage.textContent = "Local account saves on this browser. Cross-device lobbies need a realtime server.";
+    return;
+  }
+
+  const stats = getCurrentAccountStats();
+  const nextLevelXp = Math.min(MAX_LEVEL - 1, stats.level) * XP_PER_LEVEL;
+  const progress = stats.level >= MAX_LEVEL ? "MAX" : `${stats.xp}/${nextLevelXp} XP`;
+  refs.accountMessage.textContent = `Logged in as ${currentAccount}. Level ${stats.level} - ${progress}.`;
+}
+
 function setCurrentAccount(username) {
   const accounts = loadAccounts();
+  accounts[username] = normalizeAccount(accounts[username]);
+  saveAccounts(accounts);
   currentAccount = username;
   localStorage.setItem(CURRENT_ACCOUNT_KEY, username);
   refs.hostName.value = username;
@@ -142,7 +192,8 @@ function setCurrentAccount(username) {
   if (accounts[username]?.color) {
     refs.playerColor.value = accounts[username].color;
   }
-  refs.accountMessage.textContent = `Logged in as ${username}.`;
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
 }
 
 function createAccount() {
@@ -160,7 +211,7 @@ function createAccount() {
     return;
   }
 
-  accounts[username] = { password, color: refs.playerColor.value };
+  accounts[username] = { password, color: refs.playerColor.value, xp: 0 };
   saveAccounts(accounts);
   setCurrentAccount(username);
 }
@@ -184,11 +235,15 @@ function updateAccountColor() {
   if (currentAccount) {
     const accounts = loadAccounts();
     if (accounts[currentAccount]) {
-      accounts[currentAccount].color = refs.playerColor.value;
+      accounts[currentAccount] = {
+        ...normalizeAccount(accounts[currentAccount]),
+        color: refs.playerColor.value
+      };
       saveAccounts(accounts);
     }
   }
 
+  syncPlayerProfileFromAccount();
   saveLobby();
   broadcast("player-update", { player: snapshotPlayer(player) });
   renderLobbyList();
@@ -266,6 +321,8 @@ function snapshotPlayer(source) {
     checkpointIndex: source.checkpointIndex,
     finished: source.finished,
     finishTime: source.finishTime,
+    level: source.level || 1,
+    xp: source.xp || 0,
     progress: exitPortal ? Math.max(0, Math.min(100, Math.floor((source.x / exitPortal.x) * 100))) : 0,
     lastSeen: Date.now()
   };
@@ -403,6 +460,8 @@ function resetPlayer() {
   player.checkpointIndex = 0;
   player.finished = false;
   player.finishTime = null;
+  player.winRewarded = false;
+  syncPlayerProfileFromAccount();
   spectating = false;
   spectateIndex = 0;
   resultsShownForWinner = null;
@@ -445,6 +504,7 @@ function startRun(config, localName, colorIndex) {
   player.id = config.localPlayerId || createId();
   player.name = localName || (lobby.solo ? "Solo" : "Runner");
   player.color = refs.playerColor.value || PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
+  syncPlayerProfileFromAccount();
   remotePlayers.clear();
   chatMessages = Array.isArray(config.chatMessages) ? config.chatMessages.slice(-40) : [];
   (config.players || []).forEach((remote) => {
@@ -529,7 +589,7 @@ function joinLobby(event) {
 
   const config = readLobby(code);
   if (!config) {
-    refs.message.textContent = "Lobby not found. Create a lobby first, then join with the 5 digit code.";
+    refs.message.textContent = "Lobby not found. Same-browser tabs work now; different devices need a realtime server.";
     return;
   }
 
@@ -861,17 +921,40 @@ function checkFailureAndFinish() {
   if (isRaceActive() && exitPortal && player.x > exitPortal.x && !player.finished) {
     player.finished = true;
     player.finishTime = Date.now() - lobby.startTime;
+    const xpMessage = grantWinXp();
     lobby.winner = {
       id: player.id,
       name: player.name,
       time: player.finishTime
     };
-    refs.message.textContent = `${player.name} wins in ${formatTime(player.finishTime)}.`;
+    refs.message.textContent = `${player.name} wins in ${formatTime(player.finishTime)}.${xpMessage ? ` ${xpMessage}` : ""}`;
     saveLobby();
     broadcast("player-update", { player: snapshotPlayer(player) });
     broadcast("winner", { winner: lobby.winner });
     showResults();
   }
+}
+
+function grantWinXp() {
+  if (player.winRewarded) return "";
+  player.winRewarded = true;
+
+  if (!currentAccount) {
+    return "";
+  }
+
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  const beforeLevel = getLevelFromXp(account.xp);
+  account.xp = Math.min((MAX_LEVEL - 1) * XP_PER_LEVEL, account.xp + WIN_XP);
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+
+  const afterLevel = getLevelFromXp(account.xp);
+  const levelText = afterLevel > beforeLevel ? ` Level up to ${afterLevel}!` : "";
+  return `You earned ${WIN_XP} XP.${levelText}`;
 }
 
 function pruneRemotePlayers() {
@@ -982,7 +1065,7 @@ function renderLobbyList() {
       return `
         <div class="player-row">
           <span class="player-dot" style="background:${item.color || "#fff"}"></span>
-          <span>${escapeHtml(item.name || "Runner")}</span>
+          <span>${escapeHtml(item.name || "Runner")} <em>Lv ${item.level || 1}</em></span>
           <small>${tag}</small>
         </div>
       `;
@@ -1064,7 +1147,7 @@ function renderResults() {
     return `
       <div class="result-row">
         <strong>#${index + 1}</strong>
-        <span>${escapeHtml(item.name || "Runner")}</span>
+        <span>${escapeHtml(item.name || "Runner")} <em>Lv ${item.level || 1}</em></span>
         <small>${detail}</small>
       </div>
     `;
