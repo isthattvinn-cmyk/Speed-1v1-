@@ -71,6 +71,7 @@ const PHASE = {
 };
 const COUNTDOWN_MS = 15000;
 const LOAD_FADE_MS = 900;
+const SERVER_CONNECT_TIMEOUT_MS = 65000;
 
 let gridWidth = BASE_GRID_WIDTH;
 let gameState = PHASE.MENU;
@@ -359,7 +360,7 @@ function connectServer() {
           clearInterval(check);
           serverConnected = true;
           resolve(true);
-        } else if (Date.now() - startedAt > 12000 || socket.readyState === WebSocket.CLOSED) {
+        } else if (Date.now() - startedAt > SERVER_CONNECT_TIMEOUT_MS || socket.readyState === WebSocket.CLOSED) {
           clearInterval(check);
           resolve(false);
         }
@@ -377,7 +378,7 @@ function connectServer() {
 
     const timeout = setTimeout(() => {
       resolve(false);
-    }, 12000);
+    }, SERVER_CONNECT_TIMEOUT_MS);
 
     socket.addEventListener("open", () => {
       clearTimeout(timeout);
@@ -658,6 +659,7 @@ function startRun(config, localName, colorIndex) {
 async function createLobby(event) {
   event.preventDefault();
 
+  refs.message.textContent = "Connecting to online server. Free Render servers may take up to 60 seconds to wake.";
   await connectServer();
   let code = createCode();
   while (readLobby(code)) code = createCode();
@@ -716,6 +718,8 @@ async function joinLobby(event) {
     return;
   }
 
+  refs.message.textContent = "Connecting to online server. Free Render servers may take up to 60 seconds to wake.";
+
   if (await connectServer()) {
     const joinId = createId();
     player.id = joinId;
@@ -733,7 +737,7 @@ async function joinLobby(event) {
 
   const config = readLobby(code);
   if (!config) {
-    refs.message.textContent = "Lobby not found. Same-browser tabs work now; different devices need a realtime server.";
+    refs.message.textContent = "Online server did not connect. Wait a moment for Render to wake, then try Join Lobby again.";
     return;
   }
 
