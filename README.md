@@ -31,6 +31,13 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 - Lobby chat synced between players
 - Map seed sharing from the lobby panel
 - Daily challenge mode
+- Training mode
+- Checkpoint practice with reduced solo XP
+- Split cave routes, small tunnels, shortcut tunnels, rest platforms, drop shafts, climb chimneys, and momentum gates
+- Safe floor landings with walking, one jump/air jump, and floor-reset jump
+- Side or bottom block contact still causes respawn
+- `W` jumps only when not webbed; `W` still climbs while webbed
+- `W` plus `A`/`D` gives a small swing pump boost for higher curves
 - Server/version status badge for checking whether both devices loaded the newest build
 - In-memory server leaderboard for fastest race times
 - Checkmark respawn markers every 10% from 0% through 90%

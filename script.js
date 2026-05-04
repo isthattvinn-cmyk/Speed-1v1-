@@ -81,6 +81,9 @@ const SWING_FORCE = 0.315;
 const AIR_STRAFE_FORCE = 0.5625;
 const CLIMB_SPEED = 8.0;
 const TENSION_ELASTICITY = 0.05;
+const JUMP_VELOCITY = 10.5;
+const GROUND_ACCELERATION = 0.82;
+const GROUND_FRICTION = 0.82;
 const TILE_SIZE = 60;
 const BASE_GRID_WIDTH = 450;
 const LOBBY_LENGTH_SCALE = 0.5;
@@ -138,6 +141,7 @@ let particles = [];
 let tiles = [];
 let cavePath = [];
 let checkpoints = [];
+let momentumGates = [];
 let exitPortal = null;
 let keys = {};
 let mouseX = 0;
@@ -177,6 +181,8 @@ const player = {
   anchorX: 0,
   anchorY: 0,
   ropeLength: 0,
+  grounded: false,
+  jumpsLeft: 1,
   checkpointIndex: 0,
   finished: false,
   finishTime: null,
@@ -703,18 +709,18 @@ function broadcast(type, payload = {}) {
 
 function getDifficultySettings(difficulty) {
   if (difficulty === "endurance") {
-    return { bigTurnChance: 0.2, smallTurnChance: 0.48, bigTurn: 5, smallTurn: 2, caveHeight: 22 };
+    return { bigTurnChance: 0.2, smallTurnChance: 0.48, bigTurn: 5, smallTurn: 2, caveHeight: 22, splitChance: 0.18 };
   }
 
   if (difficulty === "easy") {
-    return { bigTurnChance: 0.07, smallTurnChance: 0.24, bigTurn: 2, smallTurn: 1, caveHeight: 28 };
+    return { bigTurnChance: 0.07, smallTurnChance: 0.24, bigTurn: 2, smallTurn: 1, caveHeight: 28, splitChance: 0.1 };
   }
 
   if (difficulty === "hard") {
-    return { bigTurnChance: 0.24, smallTurnChance: 0.38, bigTurn: 6, smallTurn: 2, caveHeight: 21 };
+    return { bigTurnChance: 0.08, smallTurnChance: 0.22, bigTurn: 7, smallTurn: 1, caveHeight: 21, splitChance: 0.12 };
   }
 
-  return { bigTurnChance: 0.15, smallTurnChance: 0.50, bigTurn: 4, smallTurn: 2, caveHeight: 24 };
+  return { bigTurnChance: 0.15, smallTurnChance: 0.50, bigTurn: 4, smallTurn: 2, caveHeight: 24, splitChance: 0.22 };
 }
 
 function generateLevel(seed, lengthScale, difficulty = "normal") {
@@ -722,6 +728,7 @@ function generateLevel(seed, lengthScale, difficulty = "normal") {
   particles = [];
   cavePath = [];
   checkpoints = [];
+  momentumGates = [];
 
   const random = seededRandom(seed);
   const settings = getDifficultySettings(difficulty);
@@ -751,6 +758,12 @@ function generateLevel(seed, lengthScale, difficulty = "normal") {
     }
   }
 
+  addRouteSplits(grid, random, settings, caveHeight, difficulty);
+  addSmallTunnels(grid, random, caveHeight);
+  addRestPlatforms(grid, random, caveHeight);
+  addDropShaftsAndChimneys(grid, random, caveHeight);
+  addMomentumGates(random);
+
   grid.forEach((row, y) => {
     row.forEach((char, x) => {
       if (char === "X") {
@@ -777,6 +790,120 @@ function generateLevel(seed, lengthScale, difficulty = "normal") {
   };
 }
 
+function carveCircle(grid, cx, cy, radiusX, radiusY) {
+  for (let x = Math.max(0, Math.floor(cx - radiusX)); x <= Math.min(gridWidth - 1, Math.ceil(cx + radiusX)); x += 1) {
+    for (let y = Math.max(0, Math.floor(cy - radiusY)); y <= Math.min(GRID_HEIGHT - 1, Math.ceil(cy + radiusY)); y += 1) {
+      const nx = (x - cx) / Math.max(1, radiusX);
+      const ny = (y - cy) / Math.max(1, radiusY);
+      if (nx * nx + ny * ny <= 1) {
+        grid[y][x] = " ";
+      }
+    }
+  }
+}
+
+function carveCorridor(grid, x, centerY, height) {
+  const half = Math.max(2, Math.floor(height / 2));
+  for (let y = Math.max(1, Math.floor(centerY - half)); y <= Math.min(GRID_HEIGHT - 2, Math.floor(centerY + half)); y += 1) {
+    grid[y][x] = " ";
+  }
+}
+
+function addRouteSplits(grid, random, settings, caveHeight, difficulty) {
+  let x = 35;
+  while (x < gridWidth - 60) {
+    x += 35 + Math.floor(random() * 55);
+    if (x >= gridWidth - 60 || random() > settings.splitChance) continue;
+
+    const length = 34 + Math.floor(random() * 38);
+    const endX = Math.min(gridWidth - 18, x + length);
+    const branchCount = difficulty === "normal" && random() < 0.16 ? 3 : 2;
+
+    for (let branch = 0; branch < branchCount - 1; branch += 1) {
+      const personality = branch % 2 === 0 ? -1 : 1;
+      const offset = personality * (10 + Math.floor(random() * 13));
+      for (let bx = x; bx <= endX; bx += 1) {
+        const t = (bx - x) / Math.max(1, endX - x);
+        const arc = Math.sin(t * Math.PI);
+        const centerY = cavePath[bx] + offset * arc;
+        carveCorridor(grid, bx, centerY, caveHeight * (personality < 0 ? 0.74 : 0.9));
+      }
+    }
+
+    if (random() < 0.35) {
+      const secretOffset = random() < 0.5 ? -18 : 18;
+      for (let bx = x + 6; bx <= endX - 6; bx += 1) {
+        const t = (bx - x) / Math.max(1, endX - x);
+        carveCorridor(grid, bx, cavePath[bx] + secretOffset * Math.sin(t * Math.PI), Math.max(7, caveHeight * 0.45));
+      }
+    }
+
+    x = endX;
+  }
+}
+
+function addSmallTunnels(grid, random, caveHeight) {
+  for (let i = 0; i < Math.max(4, Math.floor(gridWidth / 70)); i += 1) {
+    const startX = 25 + Math.floor(random() * (gridWidth - 55));
+    const length = 12 + Math.floor(random() * 18);
+    const direction = random() < 0.5 ? -1 : 1;
+    const startY = cavePath[startX] + direction * Math.floor(caveHeight * 0.7);
+
+    for (let tx = startX; tx < Math.min(gridWidth - 5, startX + length); tx += 1) {
+      const t = (tx - startX) / Math.max(1, length);
+      const centerY = startY + direction * Math.sin(t * Math.PI) * (5 + random() * 2);
+      carveCorridor(grid, tx, centerY, 7);
+    }
+  }
+}
+
+function addRestPlatforms(grid, random, caveHeight) {
+  for (let x = 45; x < gridWidth - 30; x += 55 + Math.floor(random() * 40)) {
+    const floorY = Math.floor(cavePath[x] + caveHeight / 2 - 1);
+    for (let px = x; px < Math.min(gridWidth, x + 12); px += 1) {
+      for (let y = floorY - 5; y < floorY; y += 1) {
+        if (grid[y]) grid[y][px] = " ";
+      }
+      if (grid[floorY]) grid[floorY][px] = "X";
+    }
+  }
+}
+
+function addDropShaftsAndChimneys(grid, random, caveHeight) {
+  for (let i = 0; i < Math.max(3, Math.floor(gridWidth / 95)); i += 1) {
+    const x = 35 + Math.floor(random() * (gridWidth - 70));
+    const y1 = cavePath[x] - Math.floor(caveHeight * 0.9);
+    const y2 = cavePath[x] + Math.floor(caveHeight * 0.9);
+    for (let y = Math.max(4, y1); y <= Math.min(GRID_HEIGHT - 4, y2); y += 1) {
+      for (let sx = x - 2; sx <= x + 2; sx += 1) {
+        grid[y][sx] = " ";
+      }
+    }
+  }
+
+  for (let i = 0; i < Math.max(2, Math.floor(gridWidth / 130)); i += 1) {
+    const x = 45 + Math.floor(random() * (gridWidth - 90));
+    const center = cavePath[x] - 8;
+    for (let y = center - 18; y < center + 8; y += 1) {
+      for (let sx = x - 3; sx <= x + 3; sx += 1) {
+        if (grid[y]) grid[y][sx] = " ";
+      }
+    }
+  }
+}
+
+function addMomentumGates(random) {
+  for (let x = 70; x < gridWidth - 50; x += 95 + Math.floor(random() * 70)) {
+    if (random() < 0.45) {
+      momentumGates.push({
+        x: x * TILE_SIZE,
+        y: cavePath[x] * TILE_SIZE - 120,
+        h: 240
+      });
+    }
+  }
+}
+
 function resetPlayer() {
   player.x = 5 * TILE_SIZE;
   player.y = cavePath[5] * TILE_SIZE;
@@ -786,6 +913,8 @@ function resetPlayer() {
   player.anchorX = 0;
   player.anchorY = 0;
   player.ropeLength = 0;
+  player.grounded = false;
+  player.jumpsLeft = 1;
   player.checkpointIndex = 0;
   player.finished = false;
   player.finishTime = null;
@@ -1308,6 +1437,8 @@ function updatePhase() {
 }
 
 function updatePlayerPhysics(dt) {
+  const previousX = player.x;
+  const previousY = player.y;
   const speed = Math.sqrt(player.velX * player.velX + player.velY * player.velY);
   runStats.maxSpeed = Math.max(runStats.maxSpeed, speed);
   if (lobby?.solo && isRaceActive()) {
@@ -1343,6 +1474,7 @@ function updatePlayerPhysics(dt) {
   const assistPull = (currentY < targetCenterY ? 1 : -1) * CENTER_PULL;
 
   if (player.isAttached) {
+    player.grounded = false;
     const holdingUp = keys.KeyW || keys.ArrowUp;
     const holdingDown = keys.KeyS || keys.ArrowDown;
     const holdingLeft = keys.KeyA || keys.ArrowLeft;
@@ -1385,16 +1517,26 @@ function updatePlayerPhysics(dt) {
     player.x = nextX - player.width / 2;
     player.y = nextY - player.height / 2;
   } else {
-    if (keys.KeyA || keys.ArrowLeft) player.velX -= AIR_STRAFE_FORCE * 0.85 * dt;
-    if (keys.KeyD || keys.ArrowRight) player.velX += AIR_STRAFE_FORCE * 0.60 * dt;
-    if (keys.KeyW || keys.ArrowUp) player.velY -= 0.15 * dt;
+    if (player.grounded) {
+      if (keys.KeyA || keys.ArrowLeft) player.velX -= GROUND_ACCELERATION * dt;
+      if (keys.KeyD || keys.ArrowRight) player.velX += GROUND_ACCELERATION * dt;
+      if (!keys.KeyA && !keys.ArrowLeft && !keys.KeyD && !keys.ArrowRight) {
+        player.velX *= Math.pow(GROUND_FRICTION, dt);
+      }
+    } else {
+      if (keys.KeyA || keys.ArrowLeft) player.velX -= AIR_STRAFE_FORCE * 0.85 * dt;
+      if (keys.KeyD || keys.ArrowRight) player.velX += AIR_STRAFE_FORCE * 0.60 * dt;
+    }
     if (keys.KeyS || keys.ArrowDown) player.velY += 0.15 * dt;
 
+    player.grounded = false;
     player.velY += (GRAVITY + assistPull) * dt;
     player.velX *= Math.pow(AIR_RESISTANCE, dt);
     player.x += player.velX * dt;
     player.y += player.velY * dt;
   }
+
+  resolveTileCollisions(previousX, previousY);
 }
 
 function updateCheckpoints() {
@@ -1404,6 +1546,33 @@ function updateCheckpoints() {
   if (checkpointIndex > player.checkpointIndex) {
     player.checkpointIndex = checkpointIndex;
     runStats.checkpointsReached = Math.max(runStats.checkpointsReached, checkpointIndex);
+  }
+}
+
+function resolveTileCollisions(previousX, previousY) {
+  const previousBottom = previousY + player.height;
+
+  for (const tile of tiles) {
+    const overlaps = player.x < tile.x + tile.w &&
+      player.x + player.width > tile.x &&
+      player.y < tile.y + tile.h &&
+      player.y + player.height > tile.y;
+
+    if (!overlaps) continue;
+
+    const landedOnTop = previousBottom <= tile.y + 8 && player.velY >= 0;
+
+    if (landedOnTop) {
+      player.y = tile.y - player.height;
+      player.velY = 0;
+      player.grounded = true;
+      player.jumpsLeft = 1;
+      player.isAttached = false;
+      return;
+    }
+
+    respawnAtCheckpoint();
+    return;
   }
 }
 
@@ -1418,17 +1587,20 @@ function respawnAtCheckpoint() {
   player.velX = 0;
   player.velY = 0;
   player.isAttached = false;
+  player.grounded = false;
+  player.jumpsLeft = 1;
   attachWeb(false);
 }
 
-function checkFailureAndFinish() {
-  for (const tile of tiles) {
-    if (player.x < tile.x + tile.w && player.x + player.width > tile.x && player.y < tile.y + tile.h && player.y + player.height > tile.y) {
-      respawnAtCheckpoint();
-      return;
-    }
-  }
+function tryJump() {
+  if (gameState === PHASE.MENU || gameState === PHASE.LOADING || player.finished || player.isAttached) return;
+  if (player.jumpsLeft <= 0) return;
+  player.velY = -JUMP_VELOCITY;
+  player.grounded = false;
+  player.jumpsLeft -= 1;
+}
 
+function checkFailureAndFinish() {
   if (player.y > (GRID_HEIGHT + 10) * TILE_SIZE || player.y < -10 * TILE_SIZE) {
     respawnAtCheckpoint();
   }
@@ -2168,6 +2340,7 @@ function draw() {
   ctx.save();
   ctx.translate(-Math.floor(cameraX), -Math.floor(cameraY));
   drawGuideLine();
+  drawMomentumGates();
   if (lobby?.phase !== PHASE.LOBBY) {
     drawCheckpoints();
     drawExit();
@@ -2224,6 +2397,22 @@ function drawGuideLine() {
   }
   ctx.stroke();
   ctx.shadowBlur = 0;
+}
+
+function drawMomentumGates() {
+  ctx.save();
+  ctx.strokeStyle = "rgba(249, 212, 35, 0.72)";
+  ctx.fillStyle = "rgba(249, 212, 35, 0.08)";
+  ctx.lineWidth = 4;
+  momentumGates.forEach((gate) => {
+    if (gate.x < cameraX - 80 || gate.x > cameraX + canvas.width + 80) return;
+    ctx.fillRect(gate.x - 10, gate.y, 20, gate.h);
+    ctx.beginPath();
+    ctx.moveTo(gate.x, gate.y);
+    ctx.lineTo(gate.x, gate.y + gate.h);
+    ctx.stroke();
+  });
+  ctx.restore();
 }
 
 function drawCheckpoints() {
@@ -2387,6 +2576,10 @@ window.addEventListener("keydown", (event) => {
     } else {
       attachWeb(false);
     }
+  }
+
+  if ((event.code === "KeyW" || event.code === "ArrowUp") && !keys[event.code]) {
+    tryJump();
   }
 
   if (spectating && !keys[event.code]) {
