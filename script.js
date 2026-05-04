@@ -8,8 +8,16 @@ const refs = {
   timer: document.getElementById("timer"),
   progress: document.getElementById("progress"),
   status: document.getElementById("status"),
+  playerList: document.getElementById("player-list"),
+  spectatePanel: document.getElementById("spectate-panel"),
+  spectateName: document.getElementById("spectate-name"),
   overlay: document.getElementById("overlay"),
   message: document.getElementById("message"),
+  accountUsername: document.getElementById("account-username"),
+  accountPassword: document.getElementById("account-password"),
+  accountMessage: document.getElementById("account-message"),
+  loginBtn: document.getElementById("login-btn"),
+  signupBtn: document.getElementById("signup-btn"),
   createForm: document.getElementById("create-form"),
   joinForm: document.getElementById("join-form"),
   soloBtn: document.getElementById("solo-btn"),
@@ -17,14 +25,21 @@ const refs = {
   guestName: document.getElementById("guest-name"),
   joinCode: document.getElementById("join-code"),
   lengthSelect: document.getElementById("length-select"),
+  difficultySelect: document.getElementById("difficulty-select"),
   leaveBtn: document.getElementById("leave-btn"),
   startRaceBtn: document.getElementById("start-race-btn"),
+  resultsPanel: document.getElementById("results-panel"),
+  resultsList: document.getElementById("results-list"),
+  rematchBtn: document.getElementById("rematch-btn"),
+  closeResultsBtn: document.getElementById("close-results-btn"),
   transitionOverlay: document.getElementById("transition-overlay"),
   transitionText: document.getElementById("transition-text"),
   countdownText: document.getElementById("countdown-text")
 };
 
 const LOBBY_PREFIX = "cave-swinger-lobby-";
+const ACCOUNT_KEY = "cave-swinger-accounts-v1";
+const CURRENT_ACCOUNT_KEY = "cave-swinger-current-account-v1";
 const TARGET_FPS = 60;
 const GRAVITY = 0.45;
 const CENTER_PULL = GRAVITY * 0.15;
@@ -64,6 +79,10 @@ let mouseY = 0;
 let channel = null;
 let lobby = null;
 let transitionTimer = null;
+let currentAccount = null;
+let spectating = false;
+let spectateIndex = 0;
+let resultsShownForWinner = null;
 
 const player = {
   id: "",
@@ -94,6 +113,69 @@ function createCode() {
   return String(Math.floor(10000 + Math.random() * 90000));
 }
 
+function loadAccounts() {
+  try {
+    return JSON.parse(localStorage.getItem(ACCOUNT_KEY)) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveAccounts(accounts) {
+  localStorage.setItem(ACCOUNT_KEY, JSON.stringify(accounts));
+}
+
+function setCurrentAccount(username) {
+  currentAccount = username;
+  localStorage.setItem(CURRENT_ACCOUNT_KEY, username);
+  refs.hostName.value = username;
+  refs.guestName.value = username;
+  refs.accountUsername.value = username;
+  refs.accountPassword.value = "";
+  refs.accountMessage.textContent = `Logged in as ${username}.`;
+}
+
+function createAccount() {
+  const username = refs.accountUsername.value.trim();
+  const password = refs.accountPassword.value;
+
+  if (!username || !password) {
+    refs.accountMessage.textContent = "Enter a username and password.";
+    return;
+  }
+
+  const accounts = loadAccounts();
+  if (accounts[username]) {
+    refs.accountMessage.textContent = "That username already exists on this browser.";
+    return;
+  }
+
+  accounts[username] = { password };
+  saveAccounts(accounts);
+  setCurrentAccount(username);
+}
+
+function loginAccount() {
+  const username = refs.accountUsername.value.trim();
+  const password = refs.accountPassword.value;
+  const accounts = loadAccounts();
+
+  if (!accounts[username] || accounts[username].password !== password) {
+    refs.accountMessage.textContent = "Username or password did not match.";
+    return;
+  }
+
+  setCurrentAccount(username);
+}
+
+function restoreAccount() {
+  const username = localStorage.getItem(CURRENT_ACCOUNT_KEY);
+  const accounts = loadAccounts();
+  if (username && accounts[username]) {
+    setCurrentAccount(username);
+  }
+}
+
 function createSeed() {
   return Math.floor(100000000 + Math.random() * 900000000);
 }
@@ -121,6 +203,7 @@ function saveLobby() {
   localStorage.setItem(`${LOBBY_PREFIX}${lobby.code}`, JSON.stringify({
     code: lobby.code,
     lengthScale: lobby.lengthScale,
+    difficulty: lobby.difficulty,
     createdAt: lobby.createdAt,
     startTime: lobby.startTime,
     phase: lobby.phase,
@@ -156,6 +239,7 @@ function snapshotPlayer(source) {
     checkpointIndex: source.checkpointIndex,
     finished: source.finished,
     finishTime: source.finishTime,
+    progress: exitPortal ? Math.max(0, Math.min(100, Math.floor((source.x / exitPortal.x) * 100))) : 0,
     lastSeen: Date.now()
   };
 }
@@ -186,10 +270,15 @@ function setupChannel(code) {
 
     if (data.type === "winner") {
       lobby.winner = data.winner;
+      showResults();
     }
 
     if (data.type === "race-start") {
       beginRaceTransition(data.race);
+    }
+
+    if (data.type === "rematch") {
+      beginRematch(data.rematch);
     }
   });
 }
@@ -199,24 +288,37 @@ function broadcast(type, payload = {}) {
   channel.postMessage({ type, playerId: player.id, ...payload });
 }
 
-function generateLevel(seed, lengthScale) {
+function getDifficultySettings(difficulty) {
+  if (difficulty === "easy") {
+    return { bigTurnChance: 0.07, smallTurnChance: 0.24, bigTurn: 2, smallTurn: 1, caveHeight: 28 };
+  }
+
+  if (difficulty === "hard") {
+    return { bigTurnChance: 0.24, smallTurnChance: 0.38, bigTurn: 6, smallTurn: 2, caveHeight: 21 };
+  }
+
+  return { bigTurnChance: 0.15, smallTurnChance: 0.50, bigTurn: 4, smallTurn: 2, caveHeight: 24 };
+}
+
+function generateLevel(seed, lengthScale, difficulty = "normal") {
   tiles = [];
   particles = [];
   cavePath = [];
   checkpoints = [];
 
   const random = seededRandom(seed);
+  const settings = getDifficultySettings(difficulty);
   gridWidth = Math.max(120, Math.round(BASE_GRID_WIDTH * lengthScale));
   const grid = Array(GRID_HEIGHT).fill().map(() => Array(gridWidth).fill("X"));
   let centerLine = Math.floor(GRID_HEIGHT / 2);
-  const caveHeight = 24;
+  const caveHeight = settings.caveHeight;
 
   for (let x = 0; x < gridWidth; x += 1) {
     if (x > 15) {
       const roll = random();
-      if (roll < 0.15) centerLine -= 4;
-      else if (roll < 0.30) centerLine += 4;
-      else if (roll < 0.50) centerLine += random() > 0.5 ? 2 : -2;
+      if (roll < settings.bigTurnChance) centerLine -= settings.bigTurn;
+      else if (roll < settings.bigTurnChance * 2) centerLine += settings.bigTurn;
+      else if (roll < settings.smallTurnChance) centerLine += random() > 0.5 ? settings.smallTurn : -settings.smallTurn;
     }
 
     centerLine = Math.max(25, Math.min(GRID_HEIGHT - 25, centerLine));
@@ -270,6 +372,10 @@ function resetPlayer() {
   player.checkpointIndex = 0;
   player.finished = false;
   player.finishTime = null;
+  spectating = false;
+  spectateIndex = 0;
+  resultsShownForWinner = null;
+  refs.spectatePanel.style.display = "none";
   cameraX = player.x - canvas.width / 2;
   cameraY = player.y - canvas.height / 2;
   attachWeb(false);
@@ -294,6 +400,7 @@ function startRun(config, localName, colorIndex) {
     lobbySeed: config.lobbySeed || config.seed || createSeed(),
     raceSeed: config.raceSeed || config.seed || createSeed(),
     lengthScale: Number(config.lengthScale || 1),
+    difficulty: config.difficulty || "normal",
     createdAt: config.createdAt || Date.now(),
     startTime: config.startTime || config.raceStartedAt || Date.now(),
     loadingStartedAt: config.loadingStartedAt || null,
@@ -314,7 +421,7 @@ function startRun(config, localName, colorIndex) {
 
   const activeSeed = lobby.phase === PHASE.LOBBY ? lobby.lobbySeed : lobby.raceSeed;
   const activeLength = lobby.phase === PHASE.LOBBY ? LOBBY_LENGTH_SCALE : lobby.lengthScale;
-  generateLevel(activeSeed, activeLength);
+  generateLevel(activeSeed, activeLength, lobby.phase === PHASE.LOBBY ? "easy" : lobby.difficulty);
   resetPlayer();
   setupChannel(lobby.code);
   gameState = lobby.phase;
@@ -330,6 +437,7 @@ function startRun(config, localName, colorIndex) {
 
   saveLobby();
   broadcast("player-update", { player: snapshotPlayer(player) });
+  renderLobbyList();
 }
 
 function createLobby(event) {
@@ -345,6 +453,7 @@ function createLobby(event) {
     lobbySeed: createSeed(),
     raceSeed: null,
     lengthScale: Number(refs.lengthSelect.value),
+    difficulty: refs.difficultySelect.value,
     createdAt: Date.now(),
     startTime: null,
     winner: null,
@@ -353,7 +462,7 @@ function createLobby(event) {
     players: []
   };
 
-  startRun(config, refs.hostName.value.trim() || "Host", 0);
+  startRun(config, refs.hostName.value.trim() || getAccountName("Host"), 0);
   lobby.hostId = hostId;
   saveLobby();
 }
@@ -365,12 +474,13 @@ function startSolo() {
     lobbySeed: createSeed(),
     raceSeed: createSeed(),
     lengthScale: Number(refs.lengthSelect.value),
+    difficulty: refs.difficultySelect.value,
     createdAt: Date.now(),
     startTime: Date.now(),
     raceStartedAt: Date.now(),
     winner: null,
     players: []
-  }, refs.hostName.value.trim() || "Solo", 0);
+  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
 }
 
 function joinLobby(event) {
@@ -388,7 +498,7 @@ function joinLobby(event) {
     return;
   }
 
-  startRun(config, refs.guestName.value.trim() || "Runner", (config.players || []).length + 1);
+  startRun(config, refs.guestName.value.trim() || getAccountName("Runner"), (config.players || []).length + 1);
 }
 
 function startRaceAsHost() {
@@ -399,6 +509,7 @@ function startRaceAsHost() {
     ...lobby,
     phase: PHASE.LOADING,
     raceSeed: createSeed(),
+    difficulty: lobby.difficulty,
     loadingStartedAt: now,
     countdownStartedAt: now + LOAD_FADE_MS,
     raceStartedAt: now + LOAD_FADE_MS + COUNTDOWN_MS,
@@ -415,6 +526,7 @@ function beginRaceTransition(race) {
 
   lobby.phase = race.phase || PHASE.LOADING;
   lobby.raceSeed = race.raceSeed;
+  lobby.difficulty = race.difficulty || lobby.difficulty;
   lobby.loadingStartedAt = race.loadingStartedAt;
   lobby.countdownStartedAt = race.countdownStartedAt;
   lobby.raceStartedAt = race.raceStartedAt;
@@ -428,7 +540,7 @@ function beginRaceTransition(race) {
   clearTimeout(transitionTimer);
   const delay = Math.max(0, (lobby.countdownStartedAt || Date.now()) - Date.now());
   transitionTimer = setTimeout(() => {
-    generateLevel(lobby.raceSeed, lobby.lengthScale);
+    generateLevel(lobby.raceSeed, lobby.lengthScale, lobby.difficulty);
     resetPlayer();
     lobby.phase = PHASE.COUNTDOWN;
     gameState = PHASE.COUNTDOWN;
@@ -453,9 +565,46 @@ function hideTransition() {
   refs.countdownText.textContent = "";
 }
 
+function getAccountName(fallback) {
+  return currentAccount || fallback;
+}
+
 function syncStartButton() {
   const canStart = isHost() && lobby?.phase === PHASE.LOBBY;
   refs.startRaceBtn.style.display = canStart ? "block" : "none";
+}
+
+function beginRematch(rematch) {
+  if (!lobby) return;
+  hideResults();
+  beginRaceTransition({
+    ...lobby,
+    phase: PHASE.LOADING,
+    raceSeed: rematch.raceSeed,
+    difficulty: rematch.difficulty || lobby.difficulty,
+    loadingStartedAt: rematch.loadingStartedAt,
+    countdownStartedAt: rematch.countdownStartedAt,
+    raceStartedAt: rematch.raceStartedAt,
+    startTime: rematch.raceStartedAt,
+    winner: null
+  });
+  resultsShownForWinner = null;
+}
+
+function rematchAsHost() {
+  if (!isHost() || !lobby) return;
+
+  const now = Date.now();
+  const rematch = {
+    raceSeed: createSeed(),
+    difficulty: lobby.difficulty,
+    loadingStartedAt: now,
+    countdownStartedAt: now + LOAD_FADE_MS,
+    raceStartedAt: now + LOAD_FADE_MS + COUNTDOWN_MS
+  };
+
+  beginRematch(rematch);
+  broadcast("rematch", { rematch });
 }
 
 function leaveGame() {
@@ -473,6 +622,8 @@ function leaveGame() {
   refs.status.textContent = "Menu";
   refs.message.textContent = "Left the run. Create or join another 5 digit party.";
   syncStartButton();
+  renderLobbyList();
+  hideResults();
 }
 
 function attachWeb(isMouse = false, targetWorldX = 0, targetWorldY = 0) {
@@ -529,6 +680,8 @@ function update(dt) {
   if (gameState === PHASE.MENU) return;
 
   updatePhase();
+  updateSpectatorControls();
+  renderResults();
 
   if (lobby?.phase === PHASE.LOADING) {
     updateHud();
@@ -546,6 +699,7 @@ function update(dt) {
   }
 
   pruneRemotePlayers();
+  renderLobbyList();
   updateCamera(dt);
   updateHud();
 }
@@ -644,6 +798,7 @@ function updateCheckpoints() {
 
 function respawnAtCheckpoint() {
   if (gameState === PHASE.MENU || gameState === PHASE.LOADING) return;
+  if (player.finished) return;
   const checkpoint = checkpoints[player.checkpointIndex] || checkpoints[0];
   player.x = checkpoint.x;
   player.y = checkpoint.y;
@@ -677,6 +832,7 @@ function checkFailureAndFinish() {
     saveLobby();
     broadcast("player-update", { player: snapshotPlayer(player) });
     broadcast("winner", { winner: lobby.winner });
+    showResults();
   }
 }
 
@@ -688,10 +844,47 @@ function pruneRemotePlayers() {
 }
 
 function updateCamera(dt) {
-  cameraX += (player.x - canvas.width / 2 - cameraX) * 0.1 * dt;
-  cameraY += (player.y - canvas.height / 2 - cameraY) * 0.1 * dt;
+  const target = getCameraTarget();
+  if (!target) return;
+  cameraX += (target.x - canvas.width / 2 - cameraX) * 0.1 * dt;
+  cameraY += (target.y - canvas.height / 2 - cameraY) * 0.1 * dt;
   cameraX = Math.max(0, Math.min(cameraX, gridWidth * TILE_SIZE - canvas.width));
   cameraY = Math.max(0, Math.min(cameraY, GRID_HEIGHT * TILE_SIZE - canvas.height));
+}
+
+function getAllPlayers() {
+  return [snapshotPlayer(player), ...Array.from(remotePlayers.values())];
+}
+
+function getSpectateTargets() {
+  return getAllPlayers().filter((item) => item.id !== player.id);
+}
+
+function getCameraTarget() {
+  if (!spectating) return player;
+  const targets = getSpectateTargets();
+  if (!targets.length) {
+    spectating = false;
+    refs.spectatePanel.style.display = "none";
+    return player;
+  }
+  spectateIndex = ((spectateIndex % targets.length) + targets.length) % targets.length;
+  const target = targets[spectateIndex];
+  refs.spectateName.textContent = target.name || "Player";
+  return target;
+}
+
+function updateSpectatorControls() {
+  const canSpectate = player.finished && getSpectateTargets().length > 0;
+  spectating = canSpectate;
+  refs.spectatePanel.style.display = canSpectate ? "block" : "none";
+}
+
+function cycleSpectate(direction) {
+  if (!spectating) return;
+  const targets = getSpectateTargets();
+  if (!targets.length) return;
+  spectateIndex = (spectateIndex + direction + targets.length) % targets.length;
 }
 
 function updateHud() {
@@ -719,6 +912,71 @@ function updateHud() {
   } else {
     refs.status.textContent = remotePlayers.size ? `${remotePlayers.size + 1} racing` : "Waiting";
   }
+}
+
+function renderLobbyList() {
+  if (!lobby || !refs.playerList) {
+    refs.playerList.innerHTML = "";
+    return;
+  }
+
+  const rows = getAllPlayers()
+    .sort((a, b) => (a.finishTime || Infinity) - (b.finishTime || Infinity))
+    .map((item) => {
+      const tag = item.id === lobby.hostId ? "HOST" : item.finished ? "DONE" : `${item.progress || 0}%`;
+      return `
+        <div class="player-row">
+          <span class="player-dot" style="background:${item.color || "#fff"}"></span>
+          <span>${escapeHtml(item.name || "Runner")}</span>
+          <small>${tag}</small>
+        </div>
+      `;
+    })
+    .join("");
+
+  refs.playerList.innerHTML = rows || `<div class="player-row"><span></span><span>No players</span><small></small></div>`;
+}
+
+function showResults() {
+  if (!lobby?.winner || resultsShownForWinner === lobby.winner.id) return;
+  resultsShownForWinner = lobby.winner.id;
+  renderResults();
+  refs.resultsPanel.classList.remove("hidden");
+}
+
+function hideResults() {
+  refs.resultsPanel.classList.add("hidden");
+}
+
+function renderResults() {
+  const players = getAllPlayers().sort((a, b) => {
+    if (a.finishTime && b.finishTime) return a.finishTime - b.finishTime;
+    if (a.finishTime) return -1;
+    if (b.finishTime) return 1;
+    return (b.progress || 0) - (a.progress || 0);
+  });
+
+  refs.resultsList.innerHTML = players.map((item, index) => {
+    const detail = item.finishTime ? formatTime(item.finishTime) : `${item.progress || 0}%`;
+    return `
+      <div class="result-row">
+        <strong>#${index + 1}</strong>
+        <span>${escapeHtml(item.name || "Runner")}</span>
+        <small>${detail}</small>
+      </div>
+    `;
+  }).join("");
+
+  refs.rematchBtn.style.display = isHost() ? "block" : "none";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function drawMinimap() {
@@ -973,6 +1231,11 @@ window.addEventListener("keydown", (event) => {
     }
   }
 
+  if (spectating && !keys[event.code]) {
+    if (event.code === "KeyA" || event.code === "ArrowLeft") cycleSpectate(-1);
+    if (event.code === "KeyD" || event.code === "ArrowRight") cycleSpectate(1);
+  }
+
   if (event.code === "KeyR") {
     respawnAtCheckpoint();
   }
@@ -989,6 +1252,10 @@ refs.joinForm.addEventListener("submit", joinLobby);
 refs.soloBtn.addEventListener("click", startSolo);
 refs.leaveBtn.addEventListener("click", leaveGame);
 refs.startRaceBtn.addEventListener("click", startRaceAsHost);
+refs.rematchBtn.addEventListener("click", rematchAsHost);
+refs.closeResultsBtn.addEventListener("click", hideResults);
+refs.loginBtn.addEventListener("click", loginAccount);
+refs.signupBtn.addEventListener("click", createAccount);
 
 window.addEventListener("beforeunload", () => {
   if (gameState !== PHASE.MENU) {
@@ -1004,5 +1271,7 @@ window.addEventListener("resize", () => {
   miniCanvas.height = miniCanvas.offsetHeight;
 });
 
+restoreAccount();
+renderLobbyList();
 window.dispatchEvent(new Event("resize"));
 requestAnimationFrame(gameLoop);

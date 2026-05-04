@@ -6,6 +6,8 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 
 - Create Lobby with a 5 digit party code
 - Join Lobby with a 5 digit party code
+- Local username/password account creation and login for saved names on this browser
+- Lobby player list with names, host tag, progress, and finished state
 - Single-player practice mode
 - Online lobbies start in a free-roam random cave while players gather
 - Host-only `Start` button begins the race when everyone is in
@@ -13,8 +15,12 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 - After generation, the screen fades back into a 6 second countdown
 - During countdown, players can climb and swing but cannot detach until the timer ends
 - Host map length selection for the race: 0.5x, Standard, or 2x
+- Difficulty selection: Easy, Normal, or Hard cave generation
 - Same generated race cave map for everyone in a lobby
 - Other players render as faded characters
+- Finished players can spectate and use `A` / `D` to cycle through players
+- Race results show placements, finish times, or distance reached
+- Host rematch button starts a new synced race
 - Checkmark respawn markers every 10% from 0% through 90%
 - Press `R` or crash to respawn at the latest checkpoint
 - First player through the exit portal wins
@@ -29,3 +35,5 @@ http://127.0.0.1:4173/
 ```
 
 Lobby sync uses `localStorage` and `BroadcastChannel`, so it works between tabs or windows in the same browser. Playing between different computers needs a small realtime server.
+
+Accounts are local-only for this static version. Usernames and passwords are stored in this browser's `localStorage`; a real public login system needs a server and proper password hashing.

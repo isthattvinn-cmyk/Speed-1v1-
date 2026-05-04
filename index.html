@@ -27,6 +27,17 @@
       </div>
     </div>
 
+    <aside id="lobby-list">
+      <h2>Lobby</h2>
+      <div id="player-list"></div>
+    </aside>
+
+    <div id="spectate-panel">
+      <span>Spectating</span>
+      <strong id="spectate-name">Player</strong>
+      <small>A / D to cycle</small>
+    </div>
+
     <div id="map-container">
       <canvas id="minimap-canvas"></canvas>
     </div>
@@ -38,6 +49,22 @@
         <p class="eyebrow">Physics party race</p>
         <h1>CAVE SWINGER ONLINE</h1>
         <p id="message">Create a 5 digit lobby, join one, or practice solo. First player through the exit wins.</p>
+
+        <form id="account-form" class="account-panel">
+          <label>
+            <span>Username</span>
+            <input id="account-username" maxlength="18" autocomplete="username" placeholder="Name">
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="account-password" type="password" maxlength="32" autocomplete="current-password" placeholder="Password">
+          </label>
+          <div class="button-row">
+            <button class="btn-primary" id="login-btn" type="button">Login</button>
+            <button class="btn-secondary" id="signup-btn" type="button">Create Account</button>
+          </div>
+          <p id="account-message">Local account saves on this browser.</p>
+        </form>
 
         <div class="menu-grid">
           <form id="create-form" class="menu-panel">
@@ -52,6 +79,14 @@
                 <option value="0.5">0.5x short</option>
                 <option value="1" selected>Standard</option>
                 <option value="2">2x long</option>
+              </select>
+            </label>
+            <label>
+              <span>Difficulty</span>
+              <select id="difficulty-select">
+                <option value="easy">Easy - more straight, soft curves</option>
+                <option value="normal" selected>Normal - straight, curves, sharp turns</option>
+                <option value="hard">Hard - straight into sharp turns</option>
               </select>
             </label>
             <div class="button-row">
@@ -78,6 +113,17 @@
 
     <button id="leave-btn" type="button">Leave</button>
     <button id="start-race-btn" type="button">Start</button>
+
+    <section id="results-panel" class="hidden">
+      <div class="results-card">
+        <h2>Race Results</h2>
+        <div id="results-list"></div>
+        <div class="button-row">
+          <button class="btn-primary" id="rematch-btn" type="button">Rematch</button>
+          <button class="btn-secondary" id="close-results-btn" type="button">Close</button>
+        </div>
+      </div>
+    </section>
 
     <div id="transition-overlay" class="hidden">
       <div id="transition-text">Generating map...</div>
