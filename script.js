@@ -22,10 +22,13 @@ const refs = {
   accountMessage: document.getElementById("account-message"),
   loginBtn: document.getElementById("login-btn"),
   signupBtn: document.getElementById("signup-btn"),
+  rewardsBtn: document.getElementById("rewards-btn"),
+  profileBtn: document.getElementById("profile-btn"),
   createForm: document.getElementById("create-form"),
   joinForm: document.getElementById("join-form"),
   soloBtn: document.getElementById("solo-btn"),
   dailyBtn: document.getElementById("daily-btn"),
+  enduranceBtn: document.getElementById("endurance-btn"),
   hostName: document.getElementById("host-name"),
   guestName: document.getElementById("guest-name"),
   joinCode: document.getElementById("join-code"),
@@ -38,6 +41,15 @@ const refs = {
   resultsList: document.getElementById("results-list"),
   rematchBtn: document.getElementById("rematch-btn"),
   closeResultsBtn: document.getElementById("close-results-btn"),
+  rewardsPanel: document.getElementById("rewards-panel"),
+  closeRewardsBtn: document.getElementById("close-rewards-btn"),
+  rewardSummary: document.getElementById("reward-summary"),
+  rewardsList: document.getElementById("rewards-list"),
+  profilePanel: document.getElementById("profile-panel"),
+  closeProfileBtn: document.getElementById("close-profile-btn"),
+  profileCard: document.getElementById("profile-card"),
+  badgeList: document.getElementById("badge-list"),
+  levelLeaderboard: document.getElementById("level-leaderboard"),
   chatPanel: document.getElementById("chat-panel"),
   chatLog: document.getElementById("chat-log"),
   chatForm: document.getElementById("chat-form"),
@@ -82,6 +94,36 @@ const LOAD_FADE_MS = 900;
 const SERVER_CONNECT_TIMEOUT_MS = 65000;
 const PING_INTERVAL_MS = 4000;
 const DAILY_LENGTH_SCALE = 1;
+const SOLO_GHOST_KEY = "cave-swinger-ghosts-v1";
+const SOLO_QUESTS = [
+  { id: "finish3", label: "Finish 3 solo runs", target: 3, xp: 150 },
+  { id: "hard1", label: "Finish 1 hard solo run", target: 1, xp: 200 },
+  { id: "clean1", label: "Finish a no-respawn solo run", target: 1, xp: 175 }
+];
+const LEVEL_TITLES = [
+  [1, "Rookie Swinger"],
+  [10, "Cave Runner"],
+  [25, "Momentum Scout"],
+  [50, "Velocity Ace"],
+  [75, "Apex Diver"],
+  [100, "Cave Legend"]
+];
+const PROFILE_BORDERS = [
+  [1, "Stone Frame"],
+  [10, "Moss Frame"],
+  [25, "Neon Frame"],
+  [50, "Gold Frame"],
+  [75, "Prismatic Frame"],
+  [100, "Legend Frame"]
+];
+const MILESTONE_BADGES = [
+  { id: "wins10", label: "10 Wins", test: (a) => a.totalWins >= 10 },
+  { id: "races100", label: "100 Races", test: (a) => a.totalRaces >= 100 },
+  { id: "solo50", label: "50 Solo Finishes", test: (a) => a.soloRuns >= 50 },
+  { id: "streak5", label: "5 Win Streak", test: (a) => a.bestWinStreak >= 5 },
+  { id: "level50", label: "Level 50", test: (a) => getLevelFromXp(a.xp) >= 50 },
+  { id: "level100", label: "Level 100", test: (a) => getLevelFromXp(a.xp) >= 100 }
+];
 
 let gridWidth = BASE_GRID_WIDTH;
 let gameState = PHASE.MENU;
@@ -111,6 +153,9 @@ let resultsShownForWinner = null;
 let chatMessages = [];
 let leaderboardEntries = [];
 let countedRaceKey = null;
+let runStats = createRunStats();
+let ghostSamples = [];
+let activeGhost = [];
 
 const player = {
   id: "",
@@ -150,6 +195,20 @@ function createCode() {
   return String(Math.floor(10000 + Math.random() * 90000));
 }
 
+function createRunStats() {
+  return {
+    startedAt: 0,
+    checkpointsReached: 0,
+    respawns: 0,
+    maxSpeed: 0,
+    combo: 0,
+    bestCombo: 0,
+    lastGhostSampleAt: 0,
+    mode: "race",
+    xpSummary: null
+  };
+}
+
 function loadAccounts() {
   try {
     return JSON.parse(localStorage.getItem(ACCOUNT_KEY)) || {};
@@ -166,6 +225,22 @@ function getLevelFromXp(xp = 0) {
   return Math.max(1, Math.min(MAX_LEVEL, Math.floor(Number(xp || 0) / XP_PER_LEVEL) + 1));
 }
 
+function getTitleForLevel(level) {
+  return LEVEL_TITLES.reduce((title, item) => level >= item[0] ? item[1] : title, LEVEL_TITLES[0][1]);
+}
+
+function getBorderForLevel(level) {
+  return PROFILE_BORDERS.reduce((border, item) => level >= item[0] ? item[1] : border, PROFILE_BORDERS[0][1]);
+}
+
+function getRewardForLevel(level) {
+  if (level === 100) return "Legend Frame + Cave Legend title";
+  if (level % 10 === 0) return `${getBorderForLevel(level)} + rare drop roll`;
+  if (level % 5 === 0) return `Milestone reward + ${getTitleForLevel(level)} title progress`;
+  if (level % 3 === 0) return "New player color preset";
+  return "XP progress + profile glow charge";
+}
+
 function normalizeAccount(account) {
   return {
     password: account?.password || "",
@@ -175,7 +250,15 @@ function normalizeAccount(account) {
     totalRaces: Number(account?.totalRaces || 0),
     winStreak: Number(account?.winStreak || 0),
     bestWinStreak: Number(account?.bestWinStreak || 0),
-    bestTimes: account?.bestTimes || {}
+    bestTimes: account?.bestTimes || {},
+    soloRuns: Number(account?.soloRuns || 0),
+    soloCrashes: Number(account?.soloCrashes || 0),
+    soloBestCombo: Number(account?.soloBestCombo || 0),
+    dailyStreak: Number(account?.dailyStreak || 0),
+    lastSoloDate: account?.lastSoloDate || "",
+    quests: account?.quests || {},
+    drops: account?.drops || [],
+    teamXp: Number(account?.teamXp || 0)
   };
 }
 
@@ -192,7 +275,14 @@ function getCurrentAccountStats() {
     totalRaces: account.totalRaces,
     winStreak: account.winStreak,
     bestWinStreak: account.bestWinStreak,
-    bestTimes: account.bestTimes
+    bestTimes: account.bestTimes,
+    soloRuns: account.soloRuns,
+    soloCrashes: account.soloCrashes,
+    soloBestCombo: account.soloBestCombo,
+    dailyStreak: account.dailyStreak,
+    quests: account.quests,
+    drops: account.drops,
+    teamXp: account.teamXp
   };
 }
 
@@ -216,7 +306,7 @@ function updateAccountMessage() {
   const stats = getCurrentAccountStats();
   const nextLevelXp = Math.min(MAX_LEVEL - 1, stats.level) * XP_PER_LEVEL;
   const progress = stats.level >= MAX_LEVEL ? "MAX" : `${stats.xp}/${nextLevelXp} XP`;
-  refs.accountMessage.textContent = `Logged in as ${currentAccount}. Level ${stats.level} - ${progress}. Wins ${stats.totalWins || 0}, streak ${stats.winStreak || 0}.`;
+  refs.accountMessage.textContent = `Logged in as ${currentAccount}. ${getTitleForLevel(stats.level)} - Level ${stats.level} - ${progress}. Wins ${stats.totalWins || 0}, solo ${stats.soloRuns || 0}, daily x${stats.dailyStreak || 0}.`;
 }
 
 function setCurrentAccount(username) {
@@ -251,7 +341,7 @@ function createAccount() {
     return;
   }
 
-  accounts[username] = { password, color: refs.playerColor.value, xp: 0, totalWins: 0, totalRaces: 0, winStreak: 0, bestWinStreak: 0, bestTimes: {} };
+  accounts[username] = { password, color: refs.playerColor.value, xp: 0, totalWins: 0, totalRaces: 0, winStreak: 0, bestWinStreak: 0, bestTimes: {}, soloRuns: 0, soloCrashes: 0, soloBestCombo: 0, dailyStreak: 0, lastSoloDate: "", quests: {}, drops: [], teamXp: 0 };
   saveAccounts(accounts);
   setCurrentAccount(username);
 }
@@ -606,6 +696,10 @@ function broadcast(type, payload = {}) {
 }
 
 function getDifficultySettings(difficulty) {
+  if (difficulty === "endurance") {
+    return { bigTurnChance: 0.2, smallTurnChance: 0.48, bigTurn: 5, smallTurn: 2, caveHeight: 22 };
+  }
+
   if (difficulty === "easy") {
     return { bigTurnChance: 0.07, smallTurnChance: 0.24, bigTurn: 2, smallTurn: 1, caveHeight: 28 };
   }
@@ -691,6 +785,11 @@ function resetPlayer() {
   player.finishTime = null;
   player.winRewarded = false;
   syncPlayerProfileFromAccount();
+  runStats = createRunStats();
+  runStats.startedAt = Date.now();
+  runStats.mode = lobby?.solo ? (lobby?.difficulty === "endurance" ? "endurance" : "solo") : "race";
+  ghostSamples = [];
+  activeGhost = lobby?.solo ? loadGhostForCurrentRun() : [];
   spectating = false;
   preGameSpectating = false;
   spectateIndex = 0;
@@ -837,6 +936,24 @@ function startDailyChallenge() {
     players: []
   }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
   refs.message.textContent = `Daily challenge ${dateKey} started.`;
+}
+
+function startEnduranceMode() {
+  startRun({
+    code: "SOLO",
+    phase: PHASE.RACING,
+    lobbySeed: createSeed(),
+    raceSeed: createSeed(),
+    lengthScale: 2,
+    difficulty: "endurance",
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    raceStartedAt: Date.now(),
+    winner: null,
+    chatMessages: [],
+    players: []
+  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+  refs.message.textContent = "Endurance mode started. Go as far as you can for bonus XP.";
 }
 
 async function joinLobby(event) {
@@ -1120,6 +1237,17 @@ function updatePhase() {
 
 function updatePlayerPhysics(dt) {
   const speed = Math.sqrt(player.velX * player.velX + player.velY * player.velY);
+  runStats.maxSpeed = Math.max(runStats.maxSpeed, speed);
+  if (lobby?.solo && isRaceActive()) {
+    if (speed > 9) {
+      runStats.combo += 1;
+      runStats.bestCombo = Math.max(runStats.bestCombo, runStats.combo);
+    } else {
+      runStats.combo = Math.max(0, runStats.combo - 0.5);
+    }
+    captureGhostSample();
+  }
+
   if (speed > 14 && Math.random() < 0.6) {
     particles.push({
       x: player.x + player.width / 2,
@@ -1189,6 +1317,7 @@ function updateCheckpoints() {
   const checkpointIndex = Math.floor(progress * 10);
   if (checkpointIndex > player.checkpointIndex) {
     player.checkpointIndex = checkpointIndex;
+    runStats.checkpointsReached = Math.max(runStats.checkpointsReached, checkpointIndex);
   }
 }
 
@@ -1196,6 +1325,8 @@ function respawnAtCheckpoint() {
   if (gameState === PHASE.MENU || gameState === PHASE.LOADING) return;
   if (player.finished) return;
   const checkpoint = checkpoints[player.checkpointIndex] || checkpoints[0];
+  runStats.respawns += 1;
+  runStats.combo = 0;
   player.x = checkpoint.x;
   player.y = checkpoint.y;
   player.velX = 0;
@@ -1220,6 +1351,16 @@ function checkFailureAndFinish() {
     player.finished = true;
     player.finishTime = Date.now() - lobby.startTime;
     recordFinishStats(player.finishTime);
+
+    if (lobby.solo) {
+      const summary = grantSoloRunXp(player.finishTime);
+      runStats.xpSummary = summary;
+      refs.message.textContent = `Solo finished in ${formatTime(player.finishTime)}. +${summary.total} XP.`;
+      saveBestGhostIfNeeded(player.finishTime, summary.personalBest);
+      submitLeaderboard(player.finishTime);
+      showResults();
+      return;
+    }
 
     if (lobby.winner) {
       recordNonWinFinishStats();
@@ -1267,6 +1408,113 @@ function grantWinXp() {
   return `You earned ${WIN_XP} XP.${levelText}`;
 }
 
+function grantSoloRunXp(finishTime) {
+  const difficultyMultiplier = lobby.difficulty === "hard" ? 1.8 : lobby.difficulty === "endurance" ? 2.2 : lobby.difficulty === "normal" ? 1.35 : 1;
+  const lengthMultiplier = Number(lobby.lengthScale || 1);
+  const base = Math.round(40 * difficultyMultiplier * lengthMultiplier);
+  const checkpoint = runStats.checkpointsReached * 8;
+  const clean = runStats.respawns === 0 ? 75 : 0;
+  const comeback = runStats.respawns > 0 ? Math.min(60, runStats.respawns * 15) : 0;
+  const combo = Math.min(100, Math.floor(runStats.bestCombo / 40));
+  const bestKey = getRunBestKey();
+  const currentBest = getCurrentAccountStats().bestTimes?.[bestKey];
+  const personalBest = !currentBest || finishTime < currentBest;
+  const pb = personalBest ? 125 : 0;
+  const streak = updateSoloDailyStreak();
+  const streakBonus = Math.min(100, streak * 10);
+  const quest = updateSoloQuests();
+  const total = base + checkpoint + clean + comeback + combo + pb + streakBonus + quest.xp;
+
+  addAccountXp(total);
+  updateSoloStats();
+
+  return { base, checkpoint, clean, comeback, combo, pb, streakBonus, quest, total, personalBest };
+}
+
+function addAccountXp(amount) {
+  if (!currentAccount) return;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  const beforeLevel = getLevelFromXp(account.xp);
+  account.xp = Math.min((MAX_LEVEL - 1) * XP_PER_LEVEL, account.xp + amount);
+  const afterLevel = getLevelFromXp(account.xp);
+  if (afterLevel > beforeLevel) {
+    applyLevelRewards(account, beforeLevel + 1, afterLevel);
+  }
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+}
+
+function applyLevelRewards(account, fromLevel, toLevel) {
+  account.drops = account.drops || [];
+  for (let level = fromLevel; level <= toLevel; level += 1) {
+    if (level % 10 === 0 || Math.random() < 0.08) {
+      account.drops.push(`Rare drop: ${getRewardForLevel(level)} at level ${level}`);
+    }
+  }
+  account.drops = account.drops.slice(-20);
+}
+
+function updateSoloStats() {
+  if (!currentAccount) return;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  account.soloRuns += 1;
+  account.soloCrashes += runStats.respawns;
+  account.soloBestCombo = Math.max(account.soloBestCombo, Math.floor(runStats.bestCombo));
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+}
+
+function updateSoloDailyStreak() {
+  if (!currentAccount) return 0;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+
+  if (account.lastSoloDate === today) {
+    return account.dailyStreak || 1;
+  }
+
+  account.dailyStreak = account.lastSoloDate === yesterday ? account.dailyStreak + 1 : 1;
+  account.lastSoloDate = today;
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  return account.dailyStreak;
+}
+
+function updateSoloQuests() {
+  if (!currentAccount) return { xp: 0, completed: [] };
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  const completed = [];
+  let xp = 0;
+
+  for (const quest of SOLO_QUESTS) {
+    const state = account.quests[quest.id] || { progress: 0, done: false };
+    if (!state.done) {
+      if (quest.id === "finish3") state.progress += 1;
+      if (quest.id === "hard1" && lobby.difficulty === "hard") state.progress += 1;
+      if (quest.id === "clean1" && runStats.respawns === 0) state.progress += 1;
+      if (state.progress >= quest.target) {
+        state.done = true;
+        xp += quest.xp;
+        completed.push(quest.label);
+      }
+      account.quests[quest.id] = state;
+    }
+  }
+
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  return { xp, completed };
+}
+
 function countRaceStarted() {
   if (!currentAccount || !lobby || preGameSpectating) return;
   const raceKey = `${lobby.code}-${lobby.raceSeed}-${lobby.raceStartedAt}`;
@@ -1297,6 +1545,10 @@ function recordFinishStats(finishTime) {
   saveAccounts(accounts);
   syncPlayerProfileFromAccount();
   updateAccountMessage();
+}
+
+function getRunBestKey() {
+  return `${lobby?.difficulty || "normal"}-${lobby?.lengthScale || 1}`;
 }
 
 function recordWinStats() {
@@ -1450,7 +1702,7 @@ function renderLobbyList() {
         : `<small>${tag} ${ping}</small>`;
       return `
         <div class="player-row">
-          <span class="player-dot" style="background:${item.color || "#fff"}"></span>
+          <span class="player-dot${(item.winStreak || 0) >= 3 ? " streak-fire" : ""}" style="background:${item.color || "#fff"}"></span>
           <span>${escapeHtml(item.name || "Runner")} <em>Lv ${item.level || 1}</em></span>
           ${hostActions}
         </div>
@@ -1580,7 +1832,24 @@ function renderResults() {
     `;
   }).join("");
 
+  if (lobby?.solo && runStats.xpSummary) {
+    const s = runStats.xpSummary;
+    refs.resultsList.innerHTML += `
+      <div class="result-row"><strong>XP</strong><span>Base ${s.base}, checkpoints ${s.checkpoint}, clean ${s.clean}, comeback ${s.comeback}, combo ${s.combo}, PB ${s.pb}, streak ${s.streakBonus}, quests ${s.quest.xp}</span><small>+${s.total}</small></div>
+      <div class="result-row"><strong>Tip</strong><span>${escapeHtml(getRunTip())}</span><small></small></div>
+      <div class="result-row"><strong>Stats</strong><span>Respawns ${runStats.respawns}, best combo ${Math.floor(runStats.bestCombo)}, max speed ${runStats.maxSpeed.toFixed(1)}</span><small></small></div>
+    `;
+  }
+
   refs.rematchBtn.style.display = isHost() ? "block" : "none";
+}
+
+function getRunTip() {
+  if (runStats.respawns > 2) return "Practice checkpoint sections where you crash most; clean runs give a big XP bonus.";
+  if (runStats.maxSpeed < 10) return "Hold momentum longer before detaching; higher speed builds combo XP faster.";
+  if (runStats.bestCombo < 120) return "Try smoother swings without slowing down to raise your combo bonus.";
+  if (runStats.xpSummary?.personalBest) return "Great personal best. Next target: no-respawn bonus plus checkpoint splits.";
+  return "You are consistent. Push harder through sharp turns for a better time.";
 }
 
 function submitLeaderboard(finishTime) {
@@ -1590,6 +1859,8 @@ function submitLeaderboard(finishTime) {
     time: finishTime,
     difficulty: lobby?.difficulty || "normal",
     lengthScale: lobby?.lengthScale || 1,
+    speed: runStats.maxSpeed,
+    category: `${lobby?.difficulty || "normal"} / ${lobby?.lengthScale || 1}x`,
     createdAt: Date.now()
   };
 
@@ -1612,10 +1883,141 @@ function renderLeaderboard() {
       <div class="leaderboard-row">
         <strong>#${index + 1}</strong>
         <span>${escapeHtml(entry.name || "Runner")} <em>Lv ${entry.level || 1}</em></span>
-        <small>${formatTime(entry.time || 0)}</small>
+        <small>${formatTime(entry.time || 0)} ${escapeHtml(entry.difficulty || "")}/${entry.lengthScale || 1}x</small>
       </div>
     `).join("")
     : `<div class="leaderboard-row"><strong>--</strong><span>No times yet</span><small></small></div>`;
+}
+
+function showRewards() {
+  renderRewards();
+  refs.rewardsPanel.classList.remove("hidden");
+}
+
+function hideRewards() {
+  refs.rewardsPanel.classList.add("hidden");
+}
+
+function renderRewards() {
+  const stats = getCurrentAccountStats();
+  refs.rewardSummary.innerHTML = `
+    <strong>${escapeHtml(currentAccount || "Guest")}</strong>
+    <p>${escapeHtml(getTitleForLevel(stats.level))} - Level ${stats.level} - ${stats.xp} XP</p>
+    <p>Current border: ${escapeHtml(getBorderForLevel(stats.level))}</p>
+  `;
+  refs.rewardsList.innerHTML = Array.from({ length: 100 }, (_, index) => {
+    const level = index + 1;
+    const unlocked = stats.level >= level;
+    return `
+      <div class="reward-row ${unlocked ? "unlocked" : "locked"}">
+        <strong>Lv ${level}</strong>
+        <span>${escapeHtml(getRewardForLevel(level))}</span>
+        <small>${unlocked ? "Unlocked" : "Locked"}</small>
+      </div>
+    `;
+  }).join("");
+}
+
+function showProfile() {
+  renderProfile();
+  refs.profilePanel.classList.remove("hidden");
+}
+
+function hideProfile() {
+  refs.profilePanel.classList.add("hidden");
+}
+
+function renderProfile() {
+  const stats = getCurrentAccountStats();
+  const account = currentAccount ? normalizeAccount(loadAccounts()[currentAccount]) : normalizeAccount({});
+  const frameClass = stats.level >= 75 ? "prismatic" : stats.level >= 50 ? "gold" : "";
+  refs.profileCard.innerHTML = `
+    <div class="profile-frame ${frameClass}">
+      <strong>${escapeHtml(currentAccount || "Guest")}</strong>
+      <p>${escapeHtml(getTitleForLevel(stats.level))} - Level ${stats.level}</p>
+      <p>${escapeHtml(getBorderForLevel(stats.level))}</p>
+      <p>Wins ${account.totalWins} | Races ${account.totalRaces} | Solo ${account.soloRuns} | Team XP ${account.teamXp}</p>
+      <p>Drops: ${account.drops.length ? escapeHtml(account.drops.slice(-3).join(" | ")) : "None yet"}</p>
+    </div>
+  `;
+  refs.badgeList.innerHTML = MILESTONE_BADGES.map((badge) => {
+    const unlocked = badge.test(account);
+    return `
+      <div class="badge-row ${unlocked ? "unlocked" : "locked"}">
+        <strong>${unlocked ? "✓" : "○"}</strong>
+        <span>${escapeHtml(badge.label)}</span>
+        <small>${unlocked ? "Earned" : "Locked"}</small>
+      </div>
+    `;
+  }).join("");
+  renderLevelLeaderboard();
+}
+
+function renderLevelLeaderboard() {
+  const accounts = loadAccounts();
+  const rows = Object.entries(accounts)
+    .map(([name, account]) => ({ name, ...normalizeAccount(account), level: getLevelFromXp(account.xp) }))
+    .sort((a, b) => b.level - a.level || b.xp - a.xp)
+    .slice(0, 10);
+  refs.levelLeaderboard.innerHTML = rows.length ? rows.map((entry, index) => `
+    <div class="level-row">
+      <strong>#${index + 1}</strong>
+      <span>${escapeHtml(entry.name)} <em>${escapeHtml(getTitleForLevel(entry.level))}</em></span>
+      <small>Lv ${entry.level}</small>
+    </div>
+  `).join("") : `<div class="level-row"><strong>--</strong><span>No accounts yet</span><small></small></div>`;
+}
+
+function loadGhosts() {
+  try {
+    return JSON.parse(localStorage.getItem(SOLO_GHOST_KEY)) || {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function saveGhosts(ghosts) {
+  localStorage.setItem(SOLO_GHOST_KEY, JSON.stringify(ghosts));
+}
+
+function captureGhostSample() {
+  if (!lobby?.solo) return;
+  const now = Date.now();
+  if (now - runStats.lastGhostSampleAt < 120) return;
+  runStats.lastGhostSampleAt = now;
+  ghostSamples.push({
+    t: now - runStats.startedAt,
+    x: player.x,
+    y: player.y,
+    color: player.color
+  });
+  if (ghostSamples.length > 1200) ghostSamples.shift();
+}
+
+function loadGhostForCurrentRun() {
+  const ghosts = loadGhosts();
+  return ghosts[getRunBestKey()]?.samples || [];
+}
+
+function saveBestGhostIfNeeded(finishTime, personalBest) {
+  if (!lobby?.solo || !personalBest) return;
+  const ghosts = loadGhosts();
+  ghosts[getRunBestKey()] = {
+    time: finishTime,
+    samples: ghostSamples.slice(0, 900)
+  };
+  saveGhosts(ghosts);
+}
+
+function getGhostPosition() {
+  if (!activeGhost.length || !runStats.startedAt) return null;
+  const elapsed = Date.now() - runStats.startedAt;
+  let sample = activeGhost[0];
+  for (const item of activeGhost) {
+    if (item.t > elapsed) break;
+    sample = item;
+  }
+  return sample;
 }
 
 function escapeHtml(value) {
@@ -1678,6 +2080,7 @@ function draw() {
   }
   drawRopesAndTiles();
   drawParticles();
+  drawGhost();
   drawRemotePlayers();
   drawPlayer(player, 1);
   ctx.restore();
@@ -1819,6 +2222,19 @@ function drawRemotePlayers() {
   remotePlayers.forEach((remote) => drawPlayer(remote, 0.38));
 }
 
+function drawGhost() {
+  const ghost = getGhostPosition();
+  if (!ghost) return;
+  drawPlayer({
+    x: ghost.x,
+    y: ghost.y,
+    width: player.width,
+    height: player.height,
+    color: "#ffffff",
+    name: "Best Ghost"
+  }, 0.24);
+}
+
 function drawPlayer(source, alpha) {
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -1899,6 +2315,7 @@ refs.createForm.addEventListener("submit", createLobby);
 refs.joinForm.addEventListener("submit", joinLobby);
 refs.soloBtn.addEventListener("click", startSolo);
 refs.dailyBtn.addEventListener("click", startDailyChallenge);
+refs.enduranceBtn.addEventListener("click", startEnduranceMode);
 refs.leaveBtn.addEventListener("click", leaveGame);
 refs.startRaceBtn.addEventListener("click", startRaceAsHost);
 refs.preSpectateBtn.addEventListener("click", togglePreGameSpectate);
@@ -1908,6 +2325,10 @@ refs.playerList.addEventListener("click", handleLobbyListClick);
 refs.seedButton.addEventListener("click", copySeed);
 refs.loginBtn.addEventListener("click", loginAccount);
 refs.signupBtn.addEventListener("click", createAccount);
+refs.rewardsBtn.addEventListener("click", showRewards);
+refs.profileBtn.addEventListener("click", showProfile);
+refs.closeRewardsBtn.addEventListener("click", hideRewards);
+refs.closeProfileBtn.addEventListener("click", hideProfile);
 refs.playerColor.addEventListener("input", updateAccountColor);
 refs.chatForm.addEventListener("submit", sendChatMessage);
 

@@ -132,10 +132,12 @@ canvas {
   align-items: center;
   z-index: 100;
   padding: 20px;
+  animation: fadeIn 240ms ease;
 }
 
 .menu-card {
   width: min(900px, 100%);
+  animation: riseIn 320ms ease;
 }
 
 .eyebrow {
@@ -230,6 +232,16 @@ select {
 input:focus,
 select:focus {
   border-color: #4ecca3;
+}
+
+button,
+input,
+select {
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, opacity 180ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
 }
 
 .button-row {
@@ -351,6 +363,11 @@ select:focus {
   height: 12px;
   border-radius: 50%;
   background: #4ecca3;
+}
+
+.player-dot.streak-fire {
+  box-shadow: 0 0 14px #ff8a00, 0 0 28px rgba(255, 75, 92, 0.72);
+  animation: pulseFire 900ms ease-in-out infinite alternate;
 }
 
 .player-row small,
@@ -493,6 +510,93 @@ select:focus {
   background: rgba(0, 0, 0, 0.68);
 }
 
+.modal-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+  animation: fadeIn 180ms ease;
+}
+
+.modal-card {
+  width: min(760px, 100%);
+  max-height: min(82vh, 760px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  background: rgba(22, 22, 37, 0.98);
+  animation: riseIn 260ms ease;
+}
+
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.modal-head h2,
+.modal-card h3 {
+  margin: 0;
+}
+
+.modal-card h3 {
+  margin-top: 18px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 1rem;
+}
+
+#reward-summary,
+#profile-card {
+  margin-bottom: 14px;
+  padding: 14px;
+  border-radius: 8px;
+  background: rgba(78, 204, 163, 0.12);
+}
+
+.reward-row,
+.badge-row,
+.level-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  min-height: 42px;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.reward-row.unlocked {
+  color: #4ecca3;
+}
+
+.reward-row.locked,
+.badge-row.locked {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.profile-frame {
+  border: 2px solid rgba(78, 204, 163, 0.8);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.profile-frame.gold {
+  border-color: #f9d423;
+  box-shadow: 0 0 22px rgba(249, 212, 35, 0.22);
+}
+
+.profile-frame.prismatic {
+  border-color: #ff4b5c;
+  box-shadow: 0 0 28px rgba(255, 75, 92, 0.34);
+}
+
 .results-card {
   width: min(560px, 100%);
   padding: 22px;
@@ -548,6 +652,27 @@ select:focus {
 
 .hidden {
   display: none !important;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pulseFire {
+  from { transform: scale(1); }
+  to { transform: scale(1.18); }
 }
 
 .hint {

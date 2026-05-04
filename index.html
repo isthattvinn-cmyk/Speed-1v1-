@@ -73,6 +73,10 @@
             <button class="btn-primary" id="login-btn" type="button">Login</button>
             <button class="btn-secondary" id="signup-btn" type="button">Create Account</button>
           </div>
+          <div class="button-row">
+            <button class="btn-secondary" id="rewards-btn" type="button">Level Rewards</button>
+            <button class="btn-secondary" id="profile-btn" type="button">Profile</button>
+          </div>
           <p id="account-message">Local account saves on this browser.</p>
         </form>
 
@@ -104,6 +108,7 @@
             <button class="btn-secondary" id="solo-btn" type="button">Solo</button>
           </div>
           <button class="btn-secondary" id="daily-btn" type="button">Daily Challenge</button>
+          <button class="btn-secondary" id="endurance-btn" type="button">Endurance</button>
           </form>
 
           <form id="join-form" class="menu-panel">
@@ -148,6 +153,31 @@
           <button class="btn-primary" id="rematch-btn" type="button">Rematch</button>
           <button class="btn-secondary" id="close-results-btn" type="button">Close</button>
         </div>
+      </div>
+    </section>
+
+    <section id="rewards-panel" class="modal-panel hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Level Rewards</h2>
+          <button class="btn-secondary" id="close-rewards-btn" type="button">Close</button>
+        </div>
+        <div id="reward-summary"></div>
+        <div id="rewards-list"></div>
+      </div>
+    </section>
+
+    <section id="profile-panel" class="modal-panel hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2>Profile</h2>
+          <button class="btn-secondary" id="close-profile-btn" type="button">Close</button>
+        </div>
+        <div id="profile-card"></div>
+        <h3>Milestones</h3>
+        <div id="badge-list"></div>
+        <h3>Level Leaderboard</h3>
+        <div id="level-leaderboard"></div>
       </div>
     </section>
 
