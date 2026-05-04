@@ -43,6 +43,7 @@ const refs = {
 };
 
 const LOBBY_PREFIX = "cave-swinger-lobby-";
+const SERVER_URL = "wss://speed-1v1.onrender.com";
 const ACCOUNT_KEY = "cave-swinger-accounts-v1";
 const CURRENT_ACCOUNT_KEY = "cave-swinger-current-account-v1";
 const WIN_XP = 100;
@@ -85,6 +86,8 @@ let keys = {};
 let mouseX = 0;
 let mouseY = 0;
 let channel = null;
+let socket = null;
+let serverConnected = false;
 let lobby = null;
 let transitionTimer = null;
 let currentAccount = null;
@@ -337,43 +340,162 @@ function setupChannel(code) {
 
   channel = new BroadcastChannel(`cave-swinger-${code}`);
   channel.addEventListener("message", (event) => {
-    const data = event.data;
-    if (!data || data.playerId === player.id || !lobby) return;
-
-    if (data.type === "player-update") {
-      remotePlayers.set(data.player.id, {
-        ...data.player,
-        lastSeen: Date.now()
-      });
-    }
-
-    if (data.type === "player-left") {
-      remotePlayers.delete(data.playerId);
-      saveLobby();
-    }
-
-    if (data.type === "winner") {
-      lobby.winner = data.winner;
-      showResults();
-    }
-
-    if (data.type === "race-start") {
-      beginRaceTransition(data.race);
-    }
-
-    if (data.type === "rematch") {
-      beginRematch(data.rematch);
-    }
-
-    if (data.type === "chat-message") {
-      addChatMessage(data.message, false);
-    }
+    handleRealtimeMessage(event.data);
   });
 }
 
+function connectServer() {
+  return new Promise((resolve) => {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      serverConnected = true;
+      resolve(true);
+      return;
+    }
+
+    if (socket && socket.readyState === WebSocket.CONNECTING) {
+      const startedAt = Date.now();
+      const check = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          clearInterval(check);
+          serverConnected = true;
+          resolve(true);
+        } else if (Date.now() - startedAt > 12000 || socket.readyState === WebSocket.CLOSED) {
+          clearInterval(check);
+          resolve(false);
+        }
+      }, 100);
+      return;
+    }
+
+    try {
+      socket = new WebSocket(SERVER_URL);
+    } catch (error) {
+      serverConnected = false;
+      resolve(false);
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      resolve(false);
+    }, 12000);
+
+    socket.addEventListener("open", () => {
+      clearTimeout(timeout);
+      serverConnected = true;
+      refs.message.textContent = "Connected to online server.";
+      resolve(true);
+    });
+
+    socket.addEventListener("message", (event) => {
+      handleServerMessage(event.data);
+    });
+
+    socket.addEventListener("close", () => {
+      serverConnected = false;
+    });
+
+    socket.addEventListener("error", () => {
+      serverConnected = false;
+      refs.message.textContent = "Online server is waking up or unavailable. Try again in a moment.";
+    });
+  });
+}
+
+function sendServer(message) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+
+  socket.send(JSON.stringify(message));
+  return true;
+}
+
+function handleServerMessage(raw) {
+  let data;
+
+  try {
+    data = JSON.parse(raw);
+  } catch (error) {
+    return;
+  }
+
+  if (data.type === "lobby-created") {
+    refs.message.textContent = `Online lobby ${data.code} created.`;
+    return;
+  }
+
+  if (data.type === "lobby-joined") {
+    const config = {
+      ...data.state,
+      code: data.code,
+      localPlayerId: player.id,
+      players: data.players || []
+    };
+    startRun(config, refs.guestName.value.trim() || getAccountName("Runner"), (data.players || []).length);
+    refs.message.textContent = `Joined online lobby ${data.code}.`;
+    return;
+  }
+
+  if (data.type === "lobby-not-found") {
+    refs.message.textContent = "Lobby not found on the online server. Check the 5 digit code.";
+    return;
+  }
+
+  if (data.type === "lobby-exists") {
+    refs.message.textContent = "That lobby code already exists. Try Create Lobby again.";
+    return;
+  }
+
+  if (data.type === "player-joined" && data.player && data.player.id !== player.id) {
+    remotePlayers.set(data.player.id, { ...data.player, lastSeen: Date.now() });
+    renderLobbyList();
+    return;
+  }
+
+  handleRealtimeMessage(data);
+}
+
+function handleRealtimeMessage(data) {
+  if (!data || data.playerId === player.id || !lobby) return;
+
+  if (data.type === "player-update") {
+    remotePlayers.set(data.player.id, {
+      ...data.player,
+      lastSeen: Date.now()
+    });
+  }
+
+  if (data.type === "player-left") {
+    remotePlayers.delete(data.playerId);
+    saveLobby();
+  }
+
+  if (data.type === "winner") {
+    lobby.winner = data.winner;
+    showResults();
+  }
+
+  if (data.type === "race-start") {
+    beginRaceTransition(data.race);
+  }
+
+  if (data.type === "rematch") {
+    beginRematch(data.rematch);
+  }
+
+  if (data.type === "chat-message") {
+    addChatMessage(data.message, false);
+  }
+}
+
 function broadcast(type, payload = {}) {
-  if (!channel) return;
-  channel.postMessage({ type, playerId: player.id, ...payload });
+  const message = { type, playerId: player.id, ...payload };
+  if (serverConnected) {
+    sendServer(message);
+  }
+  if (channel) {
+    channel.postMessage(message);
+  }
 }
 
 function getDifficultySettings(difficulty) {
@@ -533,9 +655,10 @@ function startRun(config, localName, colorIndex) {
   renderChat();
 }
 
-function createLobby(event) {
+async function createLobby(event) {
   event.preventDefault();
 
+  await connectServer();
   let code = createCode();
   while (readLobby(code)) code = createCode();
 
@@ -559,6 +682,12 @@ function createLobby(event) {
   startRun(config, refs.hostName.value.trim() || getAccountName("Host"), 0);
   lobby.hostId = hostId;
   saveLobby();
+  sendServer({
+    type: "create-lobby",
+    code,
+    state: config,
+    player: snapshotPlayer(player)
+  });
 }
 
 function startSolo() {
@@ -578,12 +707,27 @@ function startSolo() {
   }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
 }
 
-function joinLobby(event) {
+async function joinLobby(event) {
   event.preventDefault();
   const code = refs.joinCode.value.trim();
 
   if (!/^\d{5}$/.test(code)) {
     refs.message.textContent = "Enter a 5 digit party code.";
+    return;
+  }
+
+  if (await connectServer()) {
+    const joinId = createId();
+    player.id = joinId;
+    player.name = refs.guestName.value.trim() || getAccountName("Runner");
+    player.color = refs.playerColor.value;
+    syncPlayerProfileFromAccount();
+    sendServer({
+      type: "join-lobby",
+      code,
+      player: snapshotPlayer(player)
+    });
+    refs.message.textContent = "Joining online lobby...";
     return;
   }
 
@@ -713,6 +857,11 @@ function leaveGame() {
   remotePlayers.clear();
   if (channel) channel.close();
   channel = null;
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.close();
+  }
+  socket = null;
+  serverConnected = false;
   hideTransition();
   refs.overlay.style.display = "flex";
   refs.status.textContent = "Menu";

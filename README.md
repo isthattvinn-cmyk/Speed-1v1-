@@ -42,6 +42,12 @@ Lobby sync uses `localStorage` and `BroadcastChannel`, so it works between tabs 
 
 Accounts are local-only for this static version. Usernames and passwords are stored in this browser's `localStorage`; a real public login system needs a server and proper password hashing.
 
+The browser game is configured to use this Render WebSocket server:
+
+```text
+wss://speed-1v1.onrender.com
+```
+
 ## Render Server Deploy
 
 This repo includes a basic WebSocket server in the `server/` folder.
