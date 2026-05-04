@@ -95,6 +95,29 @@ canvas {
   z-index: 10;
 }
 
+#build-info {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  z-index: 24;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+}
+
+#build-info span {
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.68);
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.78rem;
+  font-weight: 800;
+  backdrop-filter: blur(5px);
+}
+
 #minimap-canvas {
   width: 100%;
   height: 100%;
@@ -218,7 +241,8 @@ select:focus {
 .btn-primary,
 .btn-secondary,
 #leave-btn,
-#start-race-btn {
+#start-race-btn,
+#pre-spectate-btn {
   min-height: 46px;
   padding: 10px 18px;
   border: 0;
@@ -245,7 +269,8 @@ select:focus {
 }
 
 #leave-btn,
-#start-race-btn {
+#start-race-btn,
+#pre-spectate-btn {
   position: absolute;
   top: 16px;
   z-index: 30;
@@ -262,9 +287,17 @@ select:focus {
   background: #4ecca3;
 }
 
+#pre-spectate-btn {
+  right: 186px;
+  display: none;
+  color: white;
+  background: rgba(255, 255, 255, 0.14);
+}
+
 #lobby-list,
 #spectate-panel,
-#chat-panel {
+#chat-panel,
+#leaderboard-panel {
   position: absolute;
   z-index: 22;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -288,6 +321,18 @@ select:focus {
   font-size: 0.82rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
+}
+
+#seed-button {
+  width: 100%;
+  min-height: 32px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.78rem;
+  font-weight: 800;
 }
 
 .player-row,
@@ -345,6 +390,55 @@ select:focus {
   max-height: 46vh;
   padding: 12px;
   display: none;
+}
+
+#leaderboard-panel {
+  right: 16px;
+  bottom: 70px;
+  width: 280px;
+  max-height: 30vh;
+  padding: 12px;
+  overflow: auto;
+  display: none;
+}
+
+#leaderboard-panel h2 {
+  margin: 0 0 10px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.leaderboard-row small {
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.host-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.host-actions button {
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  color: #1a1a2e;
+  background: #4ecca3;
+  font-size: 0.7rem;
+  font-weight: 900;
 }
 
 #chat-panel h2 {
@@ -491,6 +585,11 @@ select:focus {
   }
 
   #chat-panel {
+    display: none !important;
+  }
+
+  #leaderboard-panel,
+  #build-info {
     display: none !important;
   }
 

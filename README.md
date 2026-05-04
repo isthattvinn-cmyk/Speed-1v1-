@@ -9,7 +9,10 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 - Local username/password account creation and login for saved names on this browser
 - Level system from 1 to 100
 - Winners earn 100 XP toward their local account level
+- Win streak, total wins, total races, and best-time tracking
 - Lobby player list with names, levels, host tag, progress, and finished state
+- Lobby list includes ping when connected to the server
+- Host can kick players or transfer host
 - Single-player practice mode
 - Online lobbies start in a free-roam random cave while players gather
 - Host-only `Start` button begins the race when everyone is in
@@ -23,8 +26,13 @@ Cave Swinger Online is a browser physics platformer with 5 digit party lobbies, 
 - Finished players can spectate and use `A` / `D` to cycle through players
 - Race results show placements, finish times, or distance reached
 - Host rematch button starts a new synced race
+- Pre-game spectate toggle lets players watch others in the lobby, then switch back to play
 - Player color picker
 - Lobby chat synced between players
+- Map seed sharing from the lobby panel
+- Daily challenge mode
+- Server/version status badge for checking whether both devices loaded the newest build
+- In-memory server leaderboard for fastest race times
 - Checkmark respawn markers every 10% from 0% through 90%
 - Press `R` or crash to respawn at the latest checkpoint
 - First player through the exit portal wins
@@ -40,7 +48,7 @@ http://127.0.0.1:4173/
 
 Lobby sync uses `localStorage` and `BroadcastChannel`, so it works between tabs or windows in the same browser. Playing between different computers needs a small realtime server; without one, the other device cannot see the host's local lobby data.
 
-Accounts are local-only for this static version. Usernames and passwords are stored in this browser's `localStorage`; a real public login system needs a server and proper password hashing.
+Accounts are local-only for this static version. Usernames and passwords are stored in this browser's `localStorage`; a real public login system needs a server database and proper password hashing. The current server leaderboard is in-memory, so it resets when the free Render instance restarts.
 
 The browser game is configured to use this Render WebSocket server:
 

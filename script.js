@@ -8,7 +8,10 @@ const refs = {
   timer: document.getElementById("timer"),
   progress: document.getElementById("progress"),
   status: document.getElementById("status"),
+  serverStatus: document.getElementById("server-status"),
+  versionLabel: document.getElementById("version-label"),
   playerList: document.getElementById("player-list"),
+  seedButton: document.getElementById("seed-button"),
   spectatePanel: document.getElementById("spectate-panel"),
   spectateName: document.getElementById("spectate-name"),
   overlay: document.getElementById("overlay"),
@@ -22,6 +25,7 @@ const refs = {
   createForm: document.getElementById("create-form"),
   joinForm: document.getElementById("join-form"),
   soloBtn: document.getElementById("solo-btn"),
+  dailyBtn: document.getElementById("daily-btn"),
   hostName: document.getElementById("host-name"),
   guestName: document.getElementById("guest-name"),
   joinCode: document.getElementById("join-code"),
@@ -29,6 +33,7 @@ const refs = {
   difficultySelect: document.getElementById("difficulty-select"),
   leaveBtn: document.getElementById("leave-btn"),
   startRaceBtn: document.getElementById("start-race-btn"),
+  preSpectateBtn: document.getElementById("pre-spectate-btn"),
   resultsPanel: document.getElementById("results-panel"),
   resultsList: document.getElementById("results-list"),
   rematchBtn: document.getElementById("rematch-btn"),
@@ -37,6 +42,8 @@ const refs = {
   chatLog: document.getElementById("chat-log"),
   chatForm: document.getElementById("chat-form"),
   chatInput: document.getElementById("chat-input"),
+  leaderboardPanel: document.getElementById("leaderboard-panel"),
+  leaderboardList: document.getElementById("leaderboard-list"),
   transitionOverlay: document.getElementById("transition-overlay"),
   transitionText: document.getElementById("transition-text"),
   countdownText: document.getElementById("countdown-text")
@@ -44,6 +51,7 @@ const refs = {
 
 const LOBBY_PREFIX = "cave-swinger-lobby-";
 const SERVER_URL = "wss://speed-1v1.onrender.com";
+const BUILD_VERSION = "v0.4.0";
 const ACCOUNT_KEY = "cave-swinger-accounts-v1";
 const CURRENT_ACCOUNT_KEY = "cave-swinger-current-account-v1";
 const WIN_XP = 100;
@@ -72,6 +80,8 @@ const PHASE = {
 const COUNTDOWN_MS = 15000;
 const LOAD_FADE_MS = 900;
 const SERVER_CONNECT_TIMEOUT_MS = 65000;
+const PING_INTERVAL_MS = 4000;
+const DAILY_LENGTH_SCALE = 1;
 
 let gridWidth = BASE_GRID_WIDTH;
 let gameState = PHASE.MENU;
@@ -89,13 +99,18 @@ let mouseY = 0;
 let channel = null;
 let socket = null;
 let serverConnected = false;
+let pingTimer = null;
+let pendingPingAt = 0;
 let lobby = null;
 let transitionTimer = null;
 let currentAccount = null;
 let spectating = false;
+let preGameSpectating = false;
 let spectateIndex = 0;
 let resultsShownForWinner = null;
 let chatMessages = [];
+let leaderboardEntries = [];
+let countedRaceKey = null;
 
 const player = {
   id: "",
@@ -116,6 +131,12 @@ const player = {
   finishTime: null,
   level: 1,
   xp: 0,
+  totalWins: 0,
+  totalRaces: 0,
+  winStreak: 0,
+  bestWinStreak: 0,
+  bestTimes: {},
+  ping: null,
   winRewarded: false
 };
 
@@ -149,7 +170,12 @@ function normalizeAccount(account) {
   return {
     password: account?.password || "",
     color: account?.color || refs.playerColor.value || PLAYER_COLORS[0],
-    xp: Number(account?.xp || 0)
+    xp: Number(account?.xp || 0),
+    totalWins: Number(account?.totalWins || 0),
+    totalRaces: Number(account?.totalRaces || 0),
+    winStreak: Number(account?.winStreak || 0),
+    bestWinStreak: Number(account?.bestWinStreak || 0),
+    bestTimes: account?.bestTimes || {}
   };
 }
 
@@ -161,7 +187,12 @@ function getCurrentAccountStats() {
   const account = normalizeAccount(loadAccounts()[currentAccount]);
   return {
     xp: account.xp,
-    level: getLevelFromXp(account.xp)
+    level: getLevelFromXp(account.xp),
+    totalWins: account.totalWins,
+    totalRaces: account.totalRaces,
+    winStreak: account.winStreak,
+    bestWinStreak: account.bestWinStreak,
+    bestTimes: account.bestTimes
   };
 }
 
@@ -169,6 +200,11 @@ function syncPlayerProfileFromAccount() {
   const stats = getCurrentAccountStats();
   player.xp = stats.xp;
   player.level = stats.level;
+  player.totalWins = stats.totalWins || 0;
+  player.totalRaces = stats.totalRaces || 0;
+  player.winStreak = stats.winStreak || 0;
+  player.bestWinStreak = stats.bestWinStreak || 0;
+  player.bestTimes = stats.bestTimes || {};
 }
 
 function updateAccountMessage() {
@@ -180,7 +216,7 @@ function updateAccountMessage() {
   const stats = getCurrentAccountStats();
   const nextLevelXp = Math.min(MAX_LEVEL - 1, stats.level) * XP_PER_LEVEL;
   const progress = stats.level >= MAX_LEVEL ? "MAX" : `${stats.xp}/${nextLevelXp} XP`;
-  refs.accountMessage.textContent = `Logged in as ${currentAccount}. Level ${stats.level} - ${progress}.`;
+  refs.accountMessage.textContent = `Logged in as ${currentAccount}. Level ${stats.level} - ${progress}. Wins ${stats.totalWins || 0}, streak ${stats.winStreak || 0}.`;
 }
 
 function setCurrentAccount(username) {
@@ -215,7 +251,7 @@ function createAccount() {
     return;
   }
 
-  accounts[username] = { password, color: refs.playerColor.value, xp: 0 };
+  accounts[username] = { password, color: refs.playerColor.value, xp: 0, totalWins: 0, totalRaces: 0, winStreak: 0, bestWinStreak: 0, bestTimes: {} };
   saveAccounts(accounts);
   setCurrentAccount(username);
 }
@@ -327,6 +363,12 @@ function snapshotPlayer(source) {
     finishTime: source.finishTime,
     level: source.level || 1,
     xp: source.xp || 0,
+    totalWins: source.totalWins || 0,
+    totalRaces: source.totalRaces || 0,
+    winStreak: source.winStreak || 0,
+    bestWinStreak: source.bestWinStreak || 0,
+    ping: source.ping ?? null,
+    spectator: Boolean(source.spectator || preGameSpectating),
     progress: exitPortal ? Math.max(0, Math.min(100, Math.floor((source.x / exitPortal.x) * 100))) : 0,
     lastSeen: Date.now()
   };
@@ -349,6 +391,7 @@ function connectServer() {
   return new Promise((resolve) => {
     if (socket && socket.readyState === WebSocket.OPEN) {
       serverConnected = true;
+      setServerStatus("Online");
       resolve(true);
       return;
     }
@@ -359,6 +402,7 @@ function connectServer() {
         if (socket.readyState === WebSocket.OPEN) {
           clearInterval(check);
           serverConnected = true;
+          setServerStatus("Online");
           resolve(true);
         } else if (Date.now() - startedAt > SERVER_CONNECT_TIMEOUT_MS || socket.readyState === WebSocket.CLOSED) {
           clearInterval(check);
@@ -369,9 +413,11 @@ function connectServer() {
     }
 
     try {
+      setServerStatus("Connecting");
       socket = new WebSocket(SERVER_URL);
     } catch (error) {
       serverConnected = false;
+      setServerStatus("Offline fallback");
       resolve(false);
       return;
     }
@@ -383,6 +429,8 @@ function connectServer() {
     socket.addEventListener("open", () => {
       clearTimeout(timeout);
       serverConnected = true;
+      setServerStatus("Online");
+      startPingLoop();
       refs.message.textContent = "Connected to online server.";
       resolve(true);
     });
@@ -393,13 +441,37 @@ function connectServer() {
 
     socket.addEventListener("close", () => {
       serverConnected = false;
+      setServerStatus("Offline fallback");
+      stopPingLoop();
     });
 
     socket.addEventListener("error", () => {
       serverConnected = false;
+      setServerStatus("Server waking");
       refs.message.textContent = "Online server is waking up or unavailable. Try again in a moment.";
     });
   });
+}
+
+function setServerStatus(label) {
+  refs.serverStatus.textContent = label;
+}
+
+function startPingLoop() {
+  stopPingLoop();
+  sendPing();
+  pingTimer = setInterval(sendPing, PING_INTERVAL_MS);
+}
+
+function stopPingLoop() {
+  clearInterval(pingTimer);
+  pingTimer = null;
+}
+
+function sendPing() {
+  if (!serverConnected) return;
+  pendingPingAt = performance.now();
+  sendServer({ type: "ping", sentAt: Date.now() });
 }
 
 function sendServer(message) {
@@ -422,6 +494,10 @@ function handleServerMessage(raw) {
 
   if (data.type === "lobby-created") {
     refs.message.textContent = `Online lobby ${data.code} created.`;
+    if (data.leaderboard) {
+      leaderboardEntries = data.leaderboard;
+      renderLeaderboard();
+    }
     return;
   }
 
@@ -434,6 +510,8 @@ function handleServerMessage(raw) {
     };
     startRun(config, refs.guestName.value.trim() || getAccountName("Runner"), (data.players || []).length);
     refs.message.textContent = `Joined online lobby ${data.code}.`;
+    leaderboardEntries = data.leaderboard || leaderboardEntries;
+    renderLeaderboard();
     return;
   }
 
@@ -450,6 +528,19 @@ function handleServerMessage(raw) {
   if (data.type === "player-joined" && data.player && data.player.id !== player.id) {
     remotePlayers.set(data.player.id, { ...data.player, lastSeen: Date.now() });
     renderLobbyList();
+    return;
+  }
+
+  if (data.type === "pong") {
+    player.ping = Math.max(0, Math.round(performance.now() - pendingPingAt));
+    broadcast("player-update", { player: snapshotPlayer(player) });
+    renderLobbyList();
+    return;
+  }
+
+  if (data.type === "leaderboard") {
+    leaderboardEntries = data.entries || [];
+    renderLeaderboard();
     return;
   }
 
@@ -486,6 +577,21 @@ function handleRealtimeMessage(data) {
 
   if (data.type === "chat-message") {
     addChatMessage(data.message, false);
+  }
+
+  if (data.type === "kick-player" && data.targetId === player.id) {
+    leaveGame("You were kicked by the host.");
+  }
+
+  if (data.type === "kick-player" && isHost()) {
+    remotePlayers.delete(data.targetId);
+    renderLobbyList();
+  }
+
+  if (data.type === "host-transfer") {
+    lobby.hostId = data.newHostId;
+    syncStartButton();
+    renderLobbyList();
   }
 }
 
@@ -586,6 +692,7 @@ function resetPlayer() {
   player.winRewarded = false;
   syncPlayerProfileFromAccount();
   spectating = false;
+  preGameSpectating = false;
   spectateIndex = 0;
   resultsShownForWinner = null;
   refs.spectatePanel.style.display = "none";
@@ -650,6 +757,10 @@ function startRun(config, localName, colorIndex) {
     beginRaceTransition(lobby);
   }
 
+  if (lobby.phase === PHASE.RACING) {
+    countRaceStarted();
+  }
+
   saveLobby();
   broadcast("player-update", { player: snapshotPlayer(player) });
   renderLobbyList();
@@ -707,6 +818,25 @@ function startSolo() {
     chatMessages: [],
     players: []
   }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+}
+
+function startDailyChallenge() {
+  const dateKey = new Date().toISOString().slice(0, 10).replaceAll("-", "");
+  startRun({
+    code: "SOLO",
+    phase: PHASE.RACING,
+    lobbySeed: Number(dateKey),
+    raceSeed: Number(dateKey),
+    lengthScale: DAILY_LENGTH_SCALE,
+    difficulty: "normal",
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    raceStartedAt: Date.now(),
+    winner: null,
+    chatMessages: [],
+    players: []
+  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+  refs.message.textContent = `Daily challenge ${dateKey} started.`;
 }
 
 async function joinLobby(event) {
@@ -815,7 +945,18 @@ function getAccountName(fallback) {
 function syncStartButton() {
   const canStart = isHost() && lobby?.phase === PHASE.LOBBY;
   refs.startRaceBtn.style.display = canStart ? "block" : "none";
+  refs.preSpectateBtn.style.display = lobby?.phase === PHASE.LOBBY ? "block" : "none";
+  refs.preSpectateBtn.textContent = preGameSpectating ? "Play" : "Spectate";
   refs.chatPanel.style.display = lobby && !lobby.solo ? "block" : "none";
+  refs.leaderboardPanel.style.display = lobby ? "block" : "none";
+}
+
+function togglePreGameSpectate() {
+  if (!lobby || lobby.phase !== PHASE.LOBBY) return;
+  preGameSpectating = !preGameSpectating;
+  spectating = preGameSpectating;
+  syncStartButton();
+  broadcast("player-update", { player: snapshotPlayer(player) });
 }
 
 function beginRematch(rematch) {
@@ -851,7 +992,10 @@ function rematchAsHost() {
   broadcast("rematch", { rematch });
 }
 
-function leaveGame() {
+function leaveGame(message = "Left the run. Create or join another 5 digit party.") {
+  if (typeof message !== "string") {
+    message = "Left the run. Create or join another 5 digit party.";
+  }
   if (gameState !== PHASE.MENU) {
     broadcast("player-left");
     saveLobby();
@@ -869,7 +1013,7 @@ function leaveGame() {
   hideTransition();
   refs.overlay.style.display = "flex";
   refs.status.textContent = "Menu";
-  refs.message.textContent = "Left the run. Create or join another 5 digit party.";
+  refs.message.textContent = message;
   syncStartButton();
   renderLobbyList();
   chatMessages = [];
@@ -939,7 +1083,7 @@ function update(dt) {
     return;
   }
 
-  if (!player.finished) {
+  if (!player.finished && !(preGameSpectating && lobby?.phase === PHASE.LOBBY)) {
     updatePlayerPhysics(dt);
     if (isRaceActive()) {
       updateCheckpoints();
@@ -967,6 +1111,7 @@ function updatePhase() {
       lobby.phase = PHASE.RACING;
       lobby.startTime = lobby.raceStartedAt;
       gameState = PHASE.RACING;
+      countRaceStarted();
       hideTransition();
       saveLobby();
     }
@@ -1074,6 +1219,17 @@ function checkFailureAndFinish() {
   if (isRaceActive() && exitPortal && player.x > exitPortal.x && !player.finished) {
     player.finished = true;
     player.finishTime = Date.now() - lobby.startTime;
+    recordFinishStats(player.finishTime);
+
+    if (lobby.winner) {
+      recordNonWinFinishStats();
+      saveLobby();
+      broadcast("player-update", { player: snapshotPlayer(player) });
+      showResults();
+      return;
+    }
+
+    recordWinStats();
     const xpMessage = grantWinXp();
     lobby.winner = {
       id: player.id,
@@ -1084,6 +1240,7 @@ function checkFailureAndFinish() {
     saveLobby();
     broadcast("player-update", { player: snapshotPlayer(player) });
     broadcast("winner", { winner: lobby.winner });
+    submitLeaderboard(player.finishTime);
     showResults();
   }
 }
@@ -1108,6 +1265,62 @@ function grantWinXp() {
   const afterLevel = getLevelFromXp(account.xp);
   const levelText = afterLevel > beforeLevel ? ` Level up to ${afterLevel}!` : "";
   return `You earned ${WIN_XP} XP.${levelText}`;
+}
+
+function countRaceStarted() {
+  if (!currentAccount || !lobby || preGameSpectating) return;
+  const raceKey = `${lobby.code}-${lobby.raceSeed}-${lobby.raceStartedAt}`;
+  if (countedRaceKey === raceKey) return;
+  countedRaceKey = raceKey;
+
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  account.totalRaces += 1;
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+}
+
+function recordFinishStats(finishTime) {
+  if (!currentAccount || !lobby) return;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  const key = `${lobby.difficulty}-${lobby.lengthScale}`;
+  const previousBest = account.bestTimes[key];
+
+  if (!previousBest || finishTime < previousBest) {
+    account.bestTimes[key] = finishTime;
+  }
+
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+}
+
+function recordWinStats() {
+  if (!currentAccount) return;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  account.totalWins += 1;
+  account.winStreak += 1;
+  account.bestWinStreak = Math.max(account.bestWinStreak, account.winStreak);
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
+}
+
+function recordNonWinFinishStats() {
+  if (!currentAccount) return;
+  const accounts = loadAccounts();
+  const account = normalizeAccount(accounts[currentAccount]);
+  account.winStreak = 0;
+  accounts[currentAccount] = account;
+  saveAccounts(accounts);
+  syncPlayerProfileFromAccount();
+  updateAccountMessage();
 }
 
 function pruneRemotePlayers() {
@@ -1139,6 +1352,16 @@ function getCameraTarget() {
     return getCountdownPreviewTarget();
   }
 
+  if (preGameSpectating && lobby?.phase === PHASE.LOBBY) {
+    const targets = getSpectateTargets();
+    if (!targets.length) return player;
+    spectateIndex = ((spectateIndex % targets.length) + targets.length) % targets.length;
+    const target = targets[spectateIndex];
+    refs.spectateName.textContent = target.name || "Player";
+    refs.spectatePanel.style.display = "block";
+    return target;
+  }
+
   if (!spectating) return player;
   const targets = getSpectateTargets();
   if (!targets.length) {
@@ -1166,6 +1389,12 @@ function getCountdownPreviewTarget() {
 }
 
 function updateSpectatorControls() {
+  if (preGameSpectating && lobby?.phase === PHASE.LOBBY) {
+    spectating = true;
+    refs.spectatePanel.style.display = "block";
+    return;
+  }
+
   const canSpectate = player.finished && getSpectateTargets().length > 0;
   spectating = canSpectate;
   refs.spectatePanel.style.display = canSpectate ? "block" : "none";
@@ -1215,17 +1444,62 @@ function renderLobbyList() {
     .sort((a, b) => (a.finishTime || Infinity) - (b.finishTime || Infinity))
     .map((item) => {
       const tag = item.id === lobby.hostId ? "HOST" : item.finished ? "DONE" : `${item.progress || 0}%`;
+      const ping = item.ping == null ? "--" : `${item.ping}ms`;
+      const hostActions = isHost() && item.id !== player.id
+        ? `<span class="host-actions"><button type="button" data-kick-player="${item.id}">Kick</button><button type="button" data-host-transfer="${item.id}">Host</button></span>`
+        : `<small>${tag} ${ping}</small>`;
       return `
         <div class="player-row">
           <span class="player-dot" style="background:${item.color || "#fff"}"></span>
           <span>${escapeHtml(item.name || "Runner")} <em>Lv ${item.level || 1}</em></span>
-          <small>${tag}</small>
+          ${hostActions}
         </div>
       `;
     })
     .join("");
 
   refs.playerList.innerHTML = rows || `<div class="player-row"><span></span><span>No players</span><small></small></div>`;
+  refs.seedButton.textContent = `Seed: ${lobby.raceSeed || lobby.lobbySeed || "--"}`;
+}
+
+function handleLobbyListClick(event) {
+  const kickButton = event.target.closest("[data-kick-player]");
+  const hostButton = event.target.closest("[data-host-transfer]");
+
+  if (kickButton) {
+    kickPlayer(kickButton.dataset.kickPlayer);
+  }
+
+  if (hostButton) {
+    transferHost(hostButton.dataset.hostTransfer);
+  }
+}
+
+function kickPlayer(targetId) {
+  if (!isHost() || !targetId) return;
+  remotePlayers.delete(targetId);
+  broadcast("kick-player", { targetId });
+  renderLobbyList();
+}
+
+function transferHost(newHostId) {
+  if (!isHost() || !newHostId) return;
+  lobby.hostId = newHostId;
+  broadcast("host-transfer", { newHostId, state: { hostId: newHostId } });
+  syncStartButton();
+  renderLobbyList();
+}
+
+async function copySeed() {
+  if (!lobby) return;
+  const seed = String(lobby.raceSeed || lobby.lobbySeed || "");
+  if (!seed) return;
+  try {
+    await navigator.clipboard.writeText(seed);
+    refs.seedButton.textContent = "Seed copied";
+  } catch (error) {
+    refs.seedButton.textContent = `Seed: ${seed}`;
+  }
 }
 
 function addChatMessage(message, shouldBroadcast = true) {
@@ -1307,6 +1581,41 @@ function renderResults() {
   }).join("");
 
   refs.rematchBtn.style.display = isHost() ? "block" : "none";
+}
+
+function submitLeaderboard(finishTime) {
+  const entry = {
+    name: player.name,
+    level: player.level,
+    time: finishTime,
+    difficulty: lobby?.difficulty || "normal",
+    lengthScale: lobby?.lengthScale || 1,
+    createdAt: Date.now()
+  };
+
+  if (!sendServer({ type: "leaderboard-submit", entry })) {
+    leaderboardEntries.push(entry);
+    leaderboardEntries = sortLeaderboard(leaderboardEntries).slice(0, 10);
+    renderLeaderboard();
+  }
+}
+
+function sortLeaderboard(entries) {
+  return [...entries].sort((a, b) => a.time - b.time);
+}
+
+function renderLeaderboard() {
+  if (!refs.leaderboardList) return;
+  const visible = sortLeaderboard(leaderboardEntries).slice(0, 8);
+  refs.leaderboardList.innerHTML = visible.length
+    ? visible.map((entry, index) => `
+      <div class="leaderboard-row">
+        <strong>#${index + 1}</strong>
+        <span>${escapeHtml(entry.name || "Runner")} <em>Lv ${entry.level || 1}</em></span>
+        <small>${formatTime(entry.time || 0)}</small>
+      </div>
+    `).join("")
+    : `<div class="leaderboard-row"><strong>--</strong><span>No times yet</span><small></small></div>`;
 }
 
 function escapeHtml(value) {
@@ -1589,10 +1898,14 @@ window.addEventListener("keyup", (event) => {
 refs.createForm.addEventListener("submit", createLobby);
 refs.joinForm.addEventListener("submit", joinLobby);
 refs.soloBtn.addEventListener("click", startSolo);
+refs.dailyBtn.addEventListener("click", startDailyChallenge);
 refs.leaveBtn.addEventListener("click", leaveGame);
 refs.startRaceBtn.addEventListener("click", startRaceAsHost);
+refs.preSpectateBtn.addEventListener("click", togglePreGameSpectate);
 refs.rematchBtn.addEventListener("click", rematchAsHost);
 refs.closeResultsBtn.addEventListener("click", hideResults);
+refs.playerList.addEventListener("click", handleLobbyListClick);
+refs.seedButton.addEventListener("click", copySeed);
 refs.loginBtn.addEventListener("click", loginAccount);
 refs.signupBtn.addEventListener("click", createAccount);
 refs.playerColor.addEventListener("input", updateAccountColor);
@@ -1613,6 +1926,9 @@ window.addEventListener("resize", () => {
 });
 
 restoreAccount();
+refs.versionLabel.textContent = BUILD_VERSION;
+setServerStatus("Offline fallback");
 renderLobbyList();
+renderLeaderboard();
 window.dispatchEvent(new Event("resize"));
 requestAnimationFrame(gameLoop);
