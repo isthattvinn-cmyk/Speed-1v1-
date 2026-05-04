@@ -27,8 +27,10 @@ const refs = {
   createForm: document.getElementById("create-form"),
   joinForm: document.getElementById("join-form"),
   soloBtn: document.getElementById("solo-btn"),
+  trainingBtn: document.getElementById("training-btn"),
   dailyBtn: document.getElementById("daily-btn"),
   enduranceBtn: document.getElementById("endurance-btn"),
+  checkpointPracticeToggle: document.getElementById("checkpoint-practice-toggle"),
   hostName: document.getElementById("host-name"),
   guestName: document.getElementById("guest-name"),
   joinCode: document.getElementById("join-code"),
@@ -40,6 +42,8 @@ const refs = {
   resultsPanel: document.getElementById("results-panel"),
   resultsList: document.getElementById("results-list"),
   rematchBtn: document.getElementById("rematch-btn"),
+  nextMapBtn: document.getElementById("next-map-btn"),
+  replayMapBtn: document.getElementById("replay-map-btn"),
   closeResultsBtn: document.getElementById("close-results-btn"),
   rewardsPanel: document.getElementById("rewards-panel"),
   closeRewardsBtn: document.getElementById("close-rewards-btn"),
@@ -156,6 +160,8 @@ let countedRaceKey = null;
 let runStats = createRunStats();
 let ghostSamples = [];
 let activeGhost = [];
+let lastSoloConfig = null;
+let replayingMap = false;
 
 const player = {
   id: "",
@@ -790,6 +796,9 @@ function resetPlayer() {
   runStats.mode = lobby?.solo ? (lobby?.difficulty === "endurance" ? "endurance" : "solo") : "race";
   ghostSamples = [];
   activeGhost = lobby?.solo ? loadGhostForCurrentRun() : [];
+  if (replayingMap && activeGhost.length) {
+    refs.message.textContent = "Replay started. Racing your fastest ghost for this map.";
+  }
   spectating = false;
   preGameSpectating = false;
   spectateIndex = 0;
@@ -825,6 +834,7 @@ function startRun(config, localName, colorIndex) {
     loadingStartedAt: config.loadingStartedAt || null,
     countdownStartedAt: config.countdownStartedAt || null,
     raceStartedAt: config.raceStartedAt || config.startTime || Date.now(),
+    checkpointPractice: Boolean(config.checkpointPractice),
     winner: config.winner || null,
     hostId: config.hostId || "",
     solo: config.code === "SOLO"
@@ -903,57 +913,119 @@ async function createLobby(event) {
 }
 
 function startSolo() {
-  startRun({
+  startSoloWithConfig({
     code: "SOLO",
     phase: PHASE.RACING,
     lobbySeed: createSeed(),
     raceSeed: createSeed(),
     lengthScale: Number(refs.lengthSelect.value),
     difficulty: refs.difficultySelect.value,
+    checkpointPractice: refs.checkpointPracticeToggle.checked,
     createdAt: Date.now(),
     startTime: Date.now(),
     raceStartedAt: Date.now(),
     winner: null,
     chatMessages: [],
     players: []
-  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+  }, "Solo");
+}
+
+function startSoloWithConfig(config, label = "Solo") {
+  lastSoloConfig = {
+    ...config,
+    localName: refs.hostName.value.trim() || getAccountName("Solo")
+  };
+  startRun(config, lastSoloConfig.localName, 0);
+  refs.message.textContent = `${label} started.`;
+}
+
+function startTrainingMode() {
+  startSoloWithConfig({
+    code: "SOLO",
+    phase: PHASE.RACING,
+    lobbySeed: 777001,
+    raceSeed: 777001,
+    lengthScale: 0.5,
+    difficulty: "easy",
+    checkpointPractice: true,
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    raceStartedAt: Date.now(),
+    winner: null,
+    chatMessages: [],
+    players: []
+  }, "Training");
 }
 
 function startDailyChallenge() {
   const dateKey = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  startRun({
+  startSoloWithConfig({
     code: "SOLO",
     phase: PHASE.RACING,
     lobbySeed: Number(dateKey),
     raceSeed: Number(dateKey),
     lengthScale: DAILY_LENGTH_SCALE,
     difficulty: "normal",
+    checkpointPractice: refs.checkpointPracticeToggle.checked,
     createdAt: Date.now(),
     startTime: Date.now(),
     raceStartedAt: Date.now(),
     winner: null,
     chatMessages: [],
     players: []
-  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+  }, "Daily challenge");
   refs.message.textContent = `Daily challenge ${dateKey} started.`;
 }
 
 function startEnduranceMode() {
-  startRun({
+  startSoloWithConfig({
     code: "SOLO",
     phase: PHASE.RACING,
     lobbySeed: createSeed(),
     raceSeed: createSeed(),
     lengthScale: 2,
     difficulty: "endurance",
+    checkpointPractice: refs.checkpointPracticeToggle.checked,
     createdAt: Date.now(),
     startTime: Date.now(),
     raceStartedAt: Date.now(),
     winner: null,
     chatMessages: [],
     players: []
-  }, refs.hostName.value.trim() || getAccountName("Solo"), 0);
+  }, "Endurance");
   refs.message.textContent = "Endurance mode started. Go as far as you can for bonus XP.";
+}
+
+function startNextSoloMap() {
+  if (!lastSoloConfig) {
+    startSolo();
+    return;
+  }
+
+  hideResults();
+  replayingMap = false;
+  startSoloWithConfig({
+    ...lastSoloConfig,
+    lobbySeed: createSeed(),
+    raceSeed: createSeed(),
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    raceStartedAt: Date.now(),
+    winner: null
+  }, "Next map");
+}
+
+function replaySoloMap() {
+  if (!lastSoloConfig) return;
+  hideResults();
+  replayingMap = true;
+  startSoloWithConfig({
+    ...lastSoloConfig,
+    createdAt: Date.now(),
+    startTime: Date.now(),
+    raceStartedAt: Date.now(),
+    winner: null
+  }, "Replay map");
 }
 
 async function joinLobby(event) {
@@ -1271,10 +1343,24 @@ function updatePlayerPhysics(dt) {
   const assistPull = (currentY < targetCenterY ? 1 : -1) * CENTER_PULL;
 
   if (player.isAttached) {
-    if (keys.KeyW || keys.ArrowUp) player.ropeLength = Math.max(30, player.ropeLength - CLIMB_SPEED * dt);
-    if (keys.KeyS || keys.ArrowDown) player.ropeLength = Math.min(1500, player.ropeLength + CLIMB_SPEED * dt);
-    if (keys.KeyA || keys.ArrowLeft) player.velX -= SWING_FORCE * 0.85 * dt;
-    if (keys.KeyD || keys.ArrowRight) player.velX += SWING_FORCE * 0.60 * dt;
+    const holdingUp = keys.KeyW || keys.ArrowUp;
+    const holdingDown = keys.KeyS || keys.ArrowDown;
+    const holdingLeft = keys.KeyA || keys.ArrowLeft;
+    const holdingRight = keys.KeyD || keys.ArrowRight;
+
+    if (holdingUp) player.ropeLength = Math.max(30, player.ropeLength - CLIMB_SPEED * dt);
+    if (holdingDown) player.ropeLength = Math.min(1500, player.ropeLength + CLIMB_SPEED * 1.12 * dt);
+    if (holdingLeft) player.velX -= SWING_FORCE * 0.85 * dt;
+    if (holdingRight) player.velX += SWING_FORCE * 0.60 * dt;
+
+    if (holdingUp && (holdingLeft || holdingRight)) {
+      const speedPump = Math.min(0.42, Math.abs(player.velX) * 0.018);
+      player.velY -= (0.22 + speedPump) * dt;
+    }
+
+    if (holdingDown) {
+      player.velY += 0.12 * dt;
+    }
 
     player.velY += (GRAVITY + assistPull) * dt;
     let nextX = player.x + player.width / 2 + player.velX * dt;
@@ -1423,12 +1509,14 @@ function grantSoloRunXp(finishTime) {
   const streak = updateSoloDailyStreak();
   const streakBonus = Math.min(100, streak * 10);
   const quest = updateSoloQuests();
-  const total = base + checkpoint + clean + comeback + combo + pb + streakBonus + quest.xp;
+  const rawTotal = base + checkpoint + clean + comeback + combo + pb + streakBonus + quest.xp;
+  const practicePenalty = lobby.checkpointPractice ? Math.round(rawTotal * 0.4) : 0;
+  const total = rawTotal - practicePenalty;
 
   addAccountXp(total);
   updateSoloStats();
 
-  return { base, checkpoint, clean, comeback, combo, pb, streakBonus, quest, total, personalBest };
+  return { base, checkpoint, clean, comeback, combo, pb, streakBonus, quest, practicePenalty, total, personalBest };
 }
 
 function addAccountXp(amount) {
@@ -1835,13 +1923,15 @@ function renderResults() {
   if (lobby?.solo && runStats.xpSummary) {
     const s = runStats.xpSummary;
     refs.resultsList.innerHTML += `
-      <div class="result-row"><strong>XP</strong><span>Base ${s.base}, checkpoints ${s.checkpoint}, clean ${s.clean}, comeback ${s.comeback}, combo ${s.combo}, PB ${s.pb}, streak ${s.streakBonus}, quests ${s.quest.xp}</span><small>+${s.total}</small></div>
+      <div class="result-row"><strong>XP</strong><span>Base ${s.base}, checkpoints ${s.checkpoint}, clean ${s.clean}, comeback ${s.comeback}, combo ${s.combo}, PB ${s.pb}, streak ${s.streakBonus}, quests ${s.quest.xp}${s.practicePenalty ? `, practice -${s.practicePenalty}` : ""}</span><small>+${s.total}</small></div>
       <div class="result-row"><strong>Tip</strong><span>${escapeHtml(getRunTip())}</span><small></small></div>
       <div class="result-row"><strong>Stats</strong><span>Respawns ${runStats.respawns}, best combo ${Math.floor(runStats.bestCombo)}, max speed ${runStats.maxSpeed.toFixed(1)}</span><small></small></div>
     `;
   }
 
   refs.rematchBtn.style.display = isHost() ? "block" : "none";
+  refs.nextMapBtn.style.display = lobby?.solo ? "block" : "none";
+  refs.replayMapBtn.style.display = lobby?.solo ? "block" : "none";
 }
 
 function getRunTip() {
@@ -1996,17 +2086,21 @@ function captureGhostSample() {
 
 function loadGhostForCurrentRun() {
   const ghosts = loadGhosts();
-  return ghosts[getRunBestKey()]?.samples || [];
+  return ghosts[getGhostKey()]?.samples || ghosts[getRunBestKey()]?.samples || [];
 }
 
 function saveBestGhostIfNeeded(finishTime, personalBest) {
   if (!lobby?.solo || !personalBest) return;
   const ghosts = loadGhosts();
-  ghosts[getRunBestKey()] = {
+  ghosts[getGhostKey()] = {
     time: finishTime,
     samples: ghostSamples.slice(0, 900)
   };
   saveGhosts(ghosts);
+}
+
+function getGhostKey() {
+  return `${getRunBestKey()}-${lobby?.raceSeed || ""}`;
 }
 
 function getGhostPosition() {
@@ -2314,12 +2408,15 @@ window.addEventListener("keyup", (event) => {
 refs.createForm.addEventListener("submit", createLobby);
 refs.joinForm.addEventListener("submit", joinLobby);
 refs.soloBtn.addEventListener("click", startSolo);
+refs.trainingBtn.addEventListener("click", startTrainingMode);
 refs.dailyBtn.addEventListener("click", startDailyChallenge);
 refs.enduranceBtn.addEventListener("click", startEnduranceMode);
 refs.leaveBtn.addEventListener("click", leaveGame);
 refs.startRaceBtn.addEventListener("click", startRaceAsHost);
 refs.preSpectateBtn.addEventListener("click", togglePreGameSpectate);
 refs.rematchBtn.addEventListener("click", rematchAsHost);
+refs.nextMapBtn.addEventListener("click", startNextSoloMap);
+refs.replayMapBtn.addEventListener("click", replaySoloMap);
 refs.closeResultsBtn.addEventListener("click", hideResults);
 refs.playerList.addEventListener("click", handleLobbyListClick);
 refs.seedButton.addEventListener("click", copySeed);

@@ -103,10 +103,15 @@
                 <option value="hard">Hard - straight into sharp turns</option>
               </select>
             </label>
+            <label class="toggle-line">
+              <input id="checkpoint-practice-toggle" type="checkbox">
+              <span>Checkpoint practice (-40% solo XP)</span>
+            </label>
           <div class="button-row">
             <button class="btn-primary" type="submit">Create Lobby</button>
             <button class="btn-secondary" id="solo-btn" type="button">Solo</button>
           </div>
+          <button class="btn-secondary" id="training-btn" type="button">Training</button>
           <button class="btn-secondary" id="daily-btn" type="button">Daily Challenge</button>
           <button class="btn-secondary" id="endurance-btn" type="button">Endurance</button>
           </form>
@@ -151,6 +156,8 @@
         <div id="results-list"></div>
         <div class="button-row">
           <button class="btn-primary" id="rematch-btn" type="button">Rematch</button>
+          <button class="btn-primary" id="next-map-btn" type="button">Next Map</button>
+          <button class="btn-secondary" id="replay-map-btn" type="button">Replay Map</button>
           <button class="btn-secondary" id="close-results-btn" type="button">Close</button>
         </div>
       </div>
